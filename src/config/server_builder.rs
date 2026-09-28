@@ -1,7 +1,7 @@
 use crate::api::{ApiLatencyServer, ApiServer};
 use crate::common::net::{relay, relay_with_atomic_counter};
 use crate::config::{DokodemoDoor, Inbounds, Router};
-use crate::proxy::dokodemo_door::build_dokodemo_door_listener;
+use crate::proxy::dokodemo_door::{build_dokodemo_door_listener, get_original_dst};
 use crate::proxy::http::HttpInbound;
 use crate::proxy::socks::socks5::{Socks5Stream, Socks5UdpDatagram};
 use crate::proxy::socks::SOCKS_VERSION;
@@ -113,6 +113,7 @@ impl ConfigServerBuilder {
                     let inner_map = inner_map.clone();
                     let router = router.clone();
                     let target_addr = door.target_addr.take();
+                    let tproxy = door.tproxy;
                     let std_listener = build_dokodemo_door_listener(door, self.backlog)?;
                     server = server.listen("dokodemo", std_listener, move || {
                         let target_addr = target_addr.clone();
@@ -123,7 +124,19 @@ impl ConfigServerBuilder {
                             let inner_map = inner_map.clone();
                             let router = router.clone();
                             async move {
-                                let dokodemo_door_addr = io.local_addr()?;
+                                // For Go compatibility, if tproxy is enabled, try to get original destination
+                                let dokodemo_door_addr = if tproxy {
+                                    match get_original_dst(&io) {
+                                        Ok(orig_dst) => orig_dst,
+                                        Err(_) => {
+                                            // Fallback to local addr if original dst retrieval fails
+                                            // This matches Go's fallback behavior
+                                            io.local_addr()?
+                                        }
+                                    }
+                                } else {
+                                    io.local_addr()?
+                                };
                                 if let Some(addr) = target_addr {
                                     let out_stream = addr.connect_tcp().await?;
                                     return relay(io, out_stream, self.relay_buffer_size).await;

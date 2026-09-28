@@ -1,15 +1,22 @@
 use crate::config::{
-    BlackHoleConfig, DirectConfig, GrpcConfig, Http2Config, ShadowsocksConfig, SimpleObfsConfig,
-    TlsConfig, TrojanConfig, VmessConfig, WebsocketConfig, SS_LOCAL_SHARED_CONTEXT,
+    BlackHoleConfig, DirectConfig, DomainSocketConfig, GrpcConfig, Http2Config, HttpConfig,
+    KcpConfig, QuicConfig, ShadowsocksConfig, SimpleObfsConfig, TlsConfig, TrojanConfig,
+    VlessConfig, VmessConfig, WebsocketConfig, SS_LOCAL_SHARED_CONTEXT,
 };
 use crate::proxy::blackhole::BlackHoleStreamBuilder;
 use crate::proxy::direct::DirectStreamBuilder;
+use crate::proxy::domainsocket::DomainSocketStreamBuilder;
 use crate::proxy::grpc::GrpcStreamBuilder;
 use crate::proxy::h2::Http2StreamBuilder;
+use crate::proxy::http_transport::HttpTransportBuilder;
+use crate::proxy::kcp::KcpStreamBuilder;
+use crate::proxy::quic::QuicStreamBuilder;
 use crate::proxy::shadowsocks::ShadowsocksBuilder;
 use crate::proxy::simpleobfs::SimpleObfsStreamBuilder;
 use crate::proxy::tls::TlsStreamBuilder;
 use crate::proxy::trojan::TrojanStreamBuilder;
+use crate::proxy::vless::vless_option::VlessOption;
+use crate::proxy::vless::VlessBuilder;
 use crate::proxy::vmess::vmess_option::VmessOption;
 use crate::proxy::vmess::VmessBuilder;
 use crate::proxy::websocket::BinaryWsStreamBuilder;
@@ -57,6 +64,38 @@ impl ToChainableStreamBuilder for VmessConfig {
 
     fn get_protocol_type(&self) -> ProtocolType {
         ProtocolType::Vmess
+    }
+
+    fn get_addr(&self) -> Option<Address> {
+        Some(self.addr.clone())
+    }
+}
+
+impl ToChainableStreamBuilder for VlessConfig {
+    fn to_chainable_stream_builder(
+        &self,
+        addr: Option<Address>,
+    ) -> Box<dyn ChainableStreamBuilder> {
+        Box::new(VlessBuilder {
+            vless_option: VlessOption {
+                uuid: self.uuid,
+                addr: addr.unwrap(),
+                is_udp: false,
+                flow: self.flow.clone(),
+            },
+        })
+    }
+
+    fn tag(&self) -> &str {
+        self.tag.as_str()
+    }
+
+    fn clone_box(&self) -> Box<dyn ToChainableStreamBuilder> {
+        Box::new(self.clone())
+    }
+
+    fn get_protocol_type(&self) -> ProtocolType {
+        ProtocolType::Vless
     }
 
     fn get_addr(&self) -> Option<Address> {
@@ -290,5 +329,108 @@ impl ToChainableStreamBuilder for Http2Config {
 
     fn get_protocol_type(&self) -> ProtocolType {
         ProtocolType::H2
+    }
+}
+
+impl ToChainableStreamBuilder for DomainSocketConfig {
+    fn to_chainable_stream_builder(
+        &self,
+        _addr: Option<Address>,
+    ) -> Box<dyn ChainableStreamBuilder> {
+        Box::new(DomainSocketStreamBuilder::new(self.path.clone()))
+    }
+
+    fn tag(&self) -> &str {
+        self.tag.as_str()
+    }
+
+    fn clone_box(&self) -> Box<dyn ToChainableStreamBuilder> {
+        Box::new(self.clone())
+    }
+
+    fn get_protocol_type(&self) -> ProtocolType {
+        ProtocolType::DomainSocket
+    }
+}
+
+impl ToChainableStreamBuilder for HttpConfig {
+    fn to_chainable_stream_builder(
+        &self,
+        _addr: Option<Address>,
+    ) -> Box<dyn ChainableStreamBuilder> {
+        Box::new(HttpTransportBuilder::new(
+            self.hosts.clone(),
+            self.headers.clone(),
+            self.method.clone(),
+            self.path.clone(),
+        ))
+    }
+
+    fn tag(&self) -> &str {
+        self.tag.as_str()
+    }
+
+    fn clone_box(&self) -> Box<dyn ToChainableStreamBuilder> {
+        Box::new(self.clone())
+    }
+
+    fn get_protocol_type(&self) -> ProtocolType {
+        ProtocolType::Http
+    }
+}
+
+impl ToChainableStreamBuilder for QuicConfig {
+    fn to_chainable_stream_builder(
+        &self,
+        _addr: Option<Address>,
+    ) -> Box<dyn ChainableStreamBuilder> {
+        Box::new(QuicStreamBuilder::new(
+            self.security.clone(),
+            self.key.clone(),
+            self.header_type.clone(),
+        ))
+    }
+
+    fn tag(&self) -> &str {
+        self.tag.as_str()
+    }
+
+    fn clone_box(&self) -> Box<dyn ToChainableStreamBuilder> {
+        Box::new(self.clone())
+    }
+
+    fn get_protocol_type(&self) -> ProtocolType {
+        ProtocolType::Quic
+    }
+}
+
+impl ToChainableStreamBuilder for KcpConfig {
+    fn to_chainable_stream_builder(
+        &self,
+        _addr: Option<Address>,
+    ) -> Box<dyn ChainableStreamBuilder> {
+        Box::new(KcpStreamBuilder::new(
+            self.mtu,
+            self.tti,
+            self.uplink_capacity,
+            self.downlink_capacity,
+            self.congestion,
+            self.read_buffer_size,
+            self.write_buffer_size,
+            self.header_type.clone(),
+            self.seed.clone(),
+        ))
+    }
+
+    fn tag(&self) -> &str {
+        self.tag.as_str()
+    }
+
+    fn clone_box(&self) -> Box<dyn ToChainableStreamBuilder> {
+        Box::new(self.clone())
+    }
+
+    fn get_protocol_type(&self) -> ProtocolType {
+        ProtocolType::Kcp
     }
 }

@@ -13,11 +13,13 @@ pub use to_chainable_builder::ToChainableStreamBuilder;
 
 use crate::common::new_error;
 use crate::config::deserialize::{
-    default_backlog, default_grpc_path, default_http2_method, default_random_string,
-    default_relay_buffer_size, default_true, default_v2ray_geoip_path, default_v2ray_geosite_path,
-    from_str_to_address, from_str_to_cipher_kind, from_str_to_grpc_path, from_str_to_http_method,
-    from_str_to_option_address, from_str_to_path, from_str_to_security_num, from_str_to_sni,
-    from_str_to_uuid, from_str_to_ws_uri, EarlyDataUri,
+    default_backlog, default_grpc_path, default_http2_method, default_kcp_downlink,
+    default_kcp_header, default_kcp_mtu, default_kcp_read_buffer, default_kcp_tti,
+    default_kcp_uplink, default_kcp_write_buffer, default_quic_header, default_quic_security,
+    default_random_string, default_relay_buffer_size, default_true, default_v2ray_geoip_path,
+    default_v2ray_geosite_path, from_str_to_address, from_str_to_cipher_kind,
+    from_str_to_grpc_path, from_str_to_http_method, from_str_to_option_address, from_str_to_path,
+    from_str_to_security_num, from_str_to_sni, from_str_to_uuid, from_str_to_ws_uri, EarlyDataUri,
 };
 use crate::proxy::shadowsocks::aead_helper::CipherKind;
 use crate::proxy::shadowsocks::context::{BloomContext, SharedBloomContext};
@@ -50,6 +52,17 @@ struct VmessConfig {
         deserialize_with = "from_str_to_security_num"
     )]
     security_num: u8,
+    tag: String,
+}
+
+#[derive(Deserialize, Clone)]
+struct VlessConfig {
+    #[serde(deserialize_with = "from_str_to_address")]
+    addr: Address,
+    #[serde(deserialize_with = "from_str_to_uuid")]
+    uuid: Uuid,
+    #[serde(default)]
+    flow: Option<String>,
     tag: String,
 }
 
@@ -206,6 +219,60 @@ struct GrpcConfig {
     path: http::uri::PathAndQuery,
 }
 
+#[derive(Deserialize, Clone)]
+struct DomainSocketConfig {
+    tag: String,
+    path: String,
+}
+
+#[derive(Deserialize, Clone)]
+struct HttpConfig {
+    tag: String,
+    hosts: Vec<String>,
+    #[serde(default)]
+    headers: HashMap<String, String>,
+    #[serde(
+        default = "default_http2_method",
+        deserialize_with = "from_str_to_http_method"
+    )]
+    method: http::Method,
+    #[serde(deserialize_with = "from_str_to_path")]
+    path: http::uri::PathAndQuery,
+}
+
+#[derive(Deserialize, Clone)]
+struct QuicConfig {
+    tag: String,
+    #[serde(default = "default_quic_security")]
+    security: String,
+    #[serde(default)]
+    key: String,
+    #[serde(default = "default_quic_header")]
+    header_type: String,
+}
+
+#[derive(Deserialize, Clone)]
+struct KcpConfig {
+    tag: String,
+    #[serde(default = "default_kcp_mtu")]
+    mtu: u32,
+    #[serde(default = "default_kcp_tti")]
+    tti: u32,
+    #[serde(default = "default_kcp_uplink")]
+    uplink_capacity: u32,
+    #[serde(default = "default_kcp_downlink")]
+    downlink_capacity: u32,
+    #[serde(default)]
+    congestion: bool,
+    #[serde(default = "default_kcp_read_buffer")]
+    read_buffer_size: u32,
+    #[serde(default = "default_kcp_write_buffer")]
+    write_buffer_size: u32,
+    #[serde(default = "default_kcp_header")]
+    header_type: String,
+    seed: Option<String>,
+}
+
 #[derive(Deserialize)]
 pub struct Config {
     #[serde(default)]
@@ -223,6 +290,8 @@ pub struct Config {
     tls: Vec<TlsConfig>,
     #[serde(default)]
     vmess: Vec<VmessConfig>,
+    #[serde(default)]
+    vless: Vec<VlessConfig>,
     #[serde(default)]
     ws: Vec<WebsocketConfig>,
     #[serde(default)]
@@ -244,6 +313,14 @@ pub struct Config {
     #[serde(default)]
     grpc: Vec<GrpcConfig>,
     #[serde(default)]
+    domainsocket: Vec<DomainSocketConfig>,
+    #[serde(default)]
+    http: Vec<HttpConfig>,
+    #[serde(default)]
+    quic: Vec<QuicConfig>,
+    #[serde(default)]
+    kcp: Vec<KcpConfig>,
+    #[serde(default)]
     geosite_rules: Vec<GeoSiteRules>,
     #[serde(default)]
     geoip_rules: Vec<GeoIpRules>,
@@ -262,6 +339,7 @@ impl std::ops::Index<(ProtocolType, usize)> for Config {
             ProtocolType::SS => &self.ss[index.1],
             ProtocolType::Tls => &self.tls[index.1],
             ProtocolType::Vmess => &self.vmess[index.1],
+            ProtocolType::Vless => &self.vless[index.1],
             ProtocolType::WS => &self.ws[index.1],
             ProtocolType::Trojan => &self.trojan[index.1],
             ProtocolType::Direct => &self.direct[index.1],
@@ -269,6 +347,10 @@ impl std::ops::Index<(ProtocolType, usize)> for Config {
             ProtocolType::Grpc => &self.grpc[index.1],
             ProtocolType::Blackhole => &self.blackhole[index.1],
             ProtocolType::SimpleObfs => &self.simpleobfs[index.1],
+            ProtocolType::DomainSocket => &self.domainsocket[index.1],
+            ProtocolType::Http => &self.http[index.1],
+            ProtocolType::Quic => &self.quic[index.1],
+            ProtocolType::Kcp => &self.kcp[index.1],
         }
     }
 }
@@ -295,6 +377,7 @@ impl Config {
         insert_config_map!(self.ss, config_map);
         insert_config_map!(self.tls, config_map);
         insert_config_map!(self.vmess, config_map);
+        insert_config_map!(self.vless, config_map);
         insert_config_map!(self.ws, config_map);
         insert_config_map!(self.trojan, config_map);
         insert_config_map!(self.direct, config_map);
@@ -302,6 +385,10 @@ impl Config {
         insert_config_map!(self.grpc, config_map);
         insert_config_map!(self.blackhole, config_map);
         insert_config_map!(self.simpleobfs, config_map);
+        insert_config_map!(self.domainsocket, config_map);
+        insert_config_map!(self.http, config_map);
+        insert_config_map!(self.quic, config_map);
+        insert_config_map!(self.kcp, config_map);
         let mut inner_map = HashMap::new();
         for out in self.outbounds.iter() {
             let mut addrs = Vec::new();
@@ -326,7 +413,10 @@ impl Config {
             out.chain.iter().for_each(|t| {
                 if let Some((p, idx)) = config_map.get(t.as_str()) {
                     match *p {
-                        ProtocolType::Trojan | ProtocolType::SS | ProtocolType::Vmess => {
+                        ProtocolType::Trojan
+                        | ProtocolType::SS
+                        | ProtocolType::Vmess
+                        | ProtocolType::Vless => {
                             let next_addr = addr_iter.next();
                             if next_addr.is_none() {
                                 builder.push_last_builder(self[(*p, *idx)].clone_box());

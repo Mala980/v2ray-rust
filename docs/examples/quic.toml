@@ -1,0 +1,35 @@
+# QUIC Transport - Go parity
+
+[[vmess]]
+addr = "1.2.3.4:443"
+uuid = "b831381d-6324-4d53-ad4f-8cda48b30811"
+method = "aes-128-gcm"
+tag = "vmess"
+
+[[quic]]
+security = "none"
+# security: none, aes-128-gcm, chacha20-poly1305
+key = ""
+header_type = "none"
+# header_type: none, srtp, utp, wechat-video, dtls, wireguard
+tag = "quic"
+
+[[tls]]
+sni = "example.com"
+tag = "tls"
+
+[[direct]]
+tag = "direct"
+
+[[outbounds]]
+chain = ["tls", "quic", "vmess"]
+tag = "proxy"
+
+[[outbounds]]
+chain = ["direct"]
+tag = "direct-out"
+
+[[inbounds]]
+addr = "127.0.0.1:1080"
+enable_udp = true
+tag = "socks"

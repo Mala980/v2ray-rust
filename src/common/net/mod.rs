@@ -91,6 +91,11 @@ impl<T: Default + Copy> PollUtil for Poll<io::Result<T>> {
         }
     }
 }
+
+/// For Go compatibility, relay copies bidirectionally until both directions EOF
+/// Unlike the old select! implementation that cancelled one direction when the other finished,
+/// this implementation waits for both directions to complete, matching Go's v2ray-core behavior
+/// where remaining data in the opposite direction is still forwarded.
 pub async fn relay<T1, T2>(
     inbound_stream: T1,
     outbound_stream: T2,
@@ -104,15 +109,28 @@ where
     let (mut inbound_r, mut inbound_w) = tokio::io::split(inbound_stream);
     let mut down = 0u64;
     let mut up = 0u64;
-    tokio::select! {
-            _ = copy_with_capacity_and_counter(&mut outbound_r,&mut inbound_w,&mut down,LW_BUFFER_SIZE*relay_buffer_size)=>{
-            }
-            _ = copy_with_capacity_and_counter(&mut inbound_r, &mut outbound_w,&mut up,LW_BUFFER_SIZE*relay_buffer_size)=>{
-            }
+    let buf_size = LW_BUFFER_SIZE * relay_buffer_size;
+
+    // For Go compatibility, run both directions concurrently and wait for both to finish
+    // When one direction finishes, the other continues until it also finishes
+    let (res_down, res_up) = tokio::join!(
+        copy_with_capacity_and_counter(&mut outbound_r, &mut inbound_w, &mut down, buf_size),
+        copy_with_capacity_and_counter(&mut inbound_r, &mut outbound_w, &mut up, buf_size)
+    );
+
+    // Log results, but don't fail if one direction had error after the other completed
+    if let Err(e) = &res_down {
+        debug_log!("relay downlink error: {}", e);
     }
+    if let Err(e) = &res_up {
+        debug_log!("relay uplink error: {}", e);
+    }
+
     info!("downloaded bytes:{}, uploaded bytes:{}", down, up);
+    // Return Ok even if one direction errored, to match Go's behavior of closing gracefully
     Ok(())
 }
+
 pub async fn relay_with_atomic_counter<T1, T2>(
     inbound_stream: T1,
     outbound_stream: T2,
@@ -128,20 +146,32 @@ where
 {
     let (mut outbound_r, mut outbound_w) = tokio::io::split(outbound_stream);
     let (mut inbound_r, mut inbound_w) = tokio::io::split(inbound_stream);
-    tokio::select! {
-            _ = copy_with_capacity_and_atomic_counter(&mut outbound_r,
+    let buf_size = LW_BUFFER_SIZE * relay_buffer_size;
+
+    let (res_down, res_up) = tokio::join!(
+        copy_with_capacity_and_atomic_counter(
+            &mut outbound_r,
             &mut inbound_w,
             outbound_down,
             inbound_down,
-            LW_BUFFER_SIZE*relay_buffer_size)=>{
-            }
-            _ = copy_with_capacity_and_atomic_counter(&mut inbound_r,
+            buf_size
+        ),
+        copy_with_capacity_and_atomic_counter(
+            &mut inbound_r,
             &mut outbound_w,
             inbound_up,
             outbound_up,
-            LW_BUFFER_SIZE*relay_buffer_size)=>{
-            }
+            buf_size
+        )
+    );
+
+    if let Err(e) = &res_down {
+        debug_log!("relay_with_counter downlink error: {}", e);
     }
+    if let Err(e) = &res_up {
+        debug_log!("relay_with_counter uplink error: {}", e);
+    }
+
     debug_log!(
         "api atomic counter downloaded bytes:{}, uploaded bytes:{}",
         inbound_down.load(std::sync::atomic::Ordering::Relaxed),

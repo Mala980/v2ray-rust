@@ -1,0 +1,39 @@
+# Shadowsocks + UDP + Direct - Go parity, Full Cone UDP
+
+[[ss]]
+addr = "1.2.3.4:8388"
+password = "your-ss-password"
+method = "chacha20-poly1305"
+tag = "ss"
+
+[[direct]]
+tag = "direct"
+
+[[blackhole]]
+tag = "block"
+
+[[outbounds]]
+chain = ["ss"]
+tag = "proxy"
+
+[[outbounds]]
+chain = ["direct"]
+tag = "direct-out"
+
+[[outbounds]]
+chain = ["block"]
+tag = "block-out"
+
+[[inbounds]]
+addr = "127.0.0.1:1080"
+enable_udp = true
+tag = "socks"
+
+# Routing: private IP direct, ads block
+[[geoip_rules]]
+tag = "direct-out"
+rules = ["private"]
+
+[[geosite_rules]]
+tag = "block-out"
+rules = ["category-ads-all"]

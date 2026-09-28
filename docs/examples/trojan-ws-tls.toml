@@ -1,0 +1,30 @@
+# Trojan + WS + TLS - Go parity
+
+[[trojan]]
+addr = "1.2.3.4:443"
+password = "your-trojan-password"
+tag = "trojan"
+
+[[ws]]
+uri = "wss://example.com:443/ws?ed=2048"
+tag = "ws"
+
+[[tls]]
+sni = "example.com"
+tag = "tls"
+
+[[direct]]
+tag = "direct"
+
+[[outbounds]]
+chain = ["tls", "ws", "trojan"]
+tag = "proxy"
+
+[[outbounds]]
+chain = ["direct"]
+tag = "direct-out"
+
+[[inbounds]]
+addr = "127.0.0.1:1080"
+enable_udp = true
+tag = "socks"

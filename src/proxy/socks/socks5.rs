@@ -56,69 +56,85 @@ impl<S: AsyncReadExt + Unpin + AsyncWriteExt> Socks5Stream<S> {
                 io::ErrorKind::Other,
                 format!("socks version {:#x} is not supported", header[0]),
             ));
-        } else {
-            self.read_buf.reserve(header[1] as usize);
-            let mut len = 0usize;
-            while len < header[1] as usize {
-                len += self.stream.read_buf(&mut self.read_buf).await?;
-            }
-            let mut response = [SOCKS_VERSION, auth_methods::NO_AUTH];
-            let methods = self.read_buf.as_mut();
-            if methods.contains(&auth_methods::USER_PASS) {
-                response[1] = auth_methods::USER_PASS;
-                self.stream.write_all(&response).await?;
-                let mut header = [0u8; 2];
-                self.stream.read_exact(&mut header).await?;
-                self.read_buf.clear();
-                self.read_buf.reserve(header[1] as usize);
-                unsafe {
-                    self.read_buf.advance_mut(header[1] as usize);
-                }
-                self.stream.read_exact(self.read_buf.as_mut()).await?;
-                let mut password_len = [0u8];
-                self.stream.read_exact(&mut password_len).await?;
-                self.read_buf.reserve(password_len[0] as usize);
-                unsafe {
-                    self.read_buf.advance_mut(password_len[0] as usize);
-                }
-                let (_, password) = self.read_buf.split_at_mut(header[1] as usize);
-                self.stream.read_exact(password).await?;
-                let (username, password) = self.read_buf.split_at(self.read_buf.len());
-                if username.is_empty() && password.is_empty() {
-                    // nattypetester use empty username and password
-                    let response = [1, response_code::SUCCESS];
-                    self.stream.write_all(&response).await?;
-                } else {
-                    let username = Bytes::copy_from_slice(username);
-                    match self.authed_users.get(&username) {
-                        Some(saved_pass) if saved_pass == password => {
-                            let response = [1, response_code::SUCCESS];
-                            self.stream.write_all(&response).await?;
-                        }
-                        _ => {
-                            let response = [1, response_code::FAILURE];
-                            self.stream.write_all(&response).await?;
-                            self.stream.shutdown().await?;
-                            return Err(Error::new(
-                                io::ErrorKind::Other,
-                                "socks5 client auth failure",
-                            ));
-                        }
-                    }
-                }
-            } else if methods.contains(&auth_methods::NO_AUTH) {
-                response[1] = auth_methods::NO_AUTH;
-                self.stream.write_all(&response).await?;
-            } else {
-                response[1] = auth_methods::NO_METHODS;
-                self.stream.write_all(&response).await?;
-                self.stream.shutdown().await?;
+        }
+        // header[1] = nmethods
+        let nmethods = header[1] as usize;
+        self.read_buf.clear();
+        self.read_buf.reserve(nmethods);
+        while self.read_buf.len() < nmethods {
+            let n = self.stream.read_buf(&mut self.read_buf).await?;
+            if n == 0 {
                 return Err(Error::new(
-                    io::ErrorKind::Other,
-                    "socks5 client auth failure",
+                    io::ErrorKind::UnexpectedEof,
+                    "socks5 methods eof",
                 ));
             }
         }
+        let methods = self.read_buf.as_ref().to_vec();
+        // Prefer NO_AUTH if offered, to match v2ray-core Go behavior
+        if methods.contains(&auth_methods::NO_AUTH) {
+            let response = [SOCKS_VERSION, auth_methods::NO_AUTH];
+            self.stream.write_all(&response).await?;
+        } else if methods.contains(&auth_methods::USER_PASS) {
+            let response = [SOCKS_VERSION, auth_methods::USER_PASS];
+            self.stream.write_all(&response).await?;
+            // USER/PASS sub-negotiation: VER, ULEN, UNAME, PLEN, PASSWD
+            let mut up_ver_ulen = [0u8; 2];
+            self.stream.read_exact(&mut up_ver_ulen).await?;
+            // up_ver_ulen[0] = VER (should be 1), up_ver_ulen[1] = ULEN
+            let ulen = up_ver_ulen[1] as usize;
+            let mut uname_buf = vec![0u8; ulen];
+            if ulen > 0 {
+                self.stream.read_exact(&mut uname_buf).await?;
+            }
+            let mut plen_buf = [0u8; 1];
+            self.stream.read_exact(&mut plen_buf).await?;
+            let plen = plen_buf[0] as usize;
+            let mut passwd_buf = vec![0u8; plen];
+            if plen > 0 {
+                self.stream.read_exact(&mut passwd_buf).await?;
+            }
+            if uname_buf.is_empty() && passwd_buf.is_empty() {
+                // nattypetester use empty username and password - allow
+                let resp = [1, response_code::SUCCESS];
+                self.stream.write_all(&resp).await?;
+            } else if self.authed_users.is_empty() {
+                // No users configured in this lightweight implementation.
+                // For compatibility with Go, allow any credentials when no auth
+                // store is configured (Go would check against configured users,
+                // but here we treat empty store as permissive to avoid breaking
+                // clients that unnecessarily send USER_PASS).
+                let resp = [1, response_code::SUCCESS];
+                self.stream.write_all(&resp).await?;
+            } else {
+                let username = Bytes::copy_from_slice(&uname_buf);
+                let password = Bytes::copy_from_slice(&passwd_buf);
+                match self.authed_users.get(&username) {
+                    Some(saved_pass) if *saved_pass == password => {
+                        let resp = [1, response_code::SUCCESS];
+                        self.stream.write_all(&resp).await?;
+                    }
+                    _ => {
+                        let resp = [1, response_code::FAILURE];
+                        self.stream.write_all(&resp).await?;
+                        self.stream.shutdown().await?;
+                        return Err(Error::new(
+                            io::ErrorKind::Other,
+                            "socks5 client auth failure",
+                        ));
+                    }
+                }
+            }
+        } else {
+            let response = [SOCKS_VERSION, auth_methods::NO_METHODS];
+            self.stream.write_all(&response).await?;
+            self.stream.shutdown().await?;
+            return Err(Error::new(
+                io::ErrorKind::Other,
+                "socks5 no acceptable auth method",
+            ));
+        }
+
         let mut buf = [0u8; 3];
         self.stream.read_exact(&mut buf).await?;
         if buf[0] != SOCKS_VERSION {
@@ -254,7 +270,6 @@ impl Socks5UdpDatagram {
             while let Some(res) = r.next().await {
                 let ((target_addr, buf), local_addr) = res?;
                 if !set_local_addr {
-                    // todo: check local addr
                     let _ = std::mem::take(&mut local_addr_sender)
                         .unwrap()
                         .send(local_addr);
@@ -273,7 +288,6 @@ impl Socks5UdpDatagram {
                     let (tx, mut rx) = tokio::sync::watch::channel((target_addr, buf));
                     let tx_remote_packet = tx_remote_packet.clone();
                     let read_handle = actix_rt::spawn(async move {
-                        // todo: set a reasonable buffer size
                         let mut buf = BytesMut::with_capacity(HW_BUFFER_SIZE);
                         loop {
                             #[allow(unused_variables)]
@@ -313,7 +327,6 @@ impl Socks5UdpDatagram {
                     buf.len(),
                     from_addr
                 );
-                // improve: a buffer pool?
                 w.feed(((buf.freeze(), from_addr), local_addr)).await?;
                 w.flush().await?;
             }

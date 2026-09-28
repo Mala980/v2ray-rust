@@ -28,20 +28,34 @@ pub struct VmessAeadWriter {
 pub enum VmessSecurity {
     Aes128Gcm(Aes128Gcm),
     ChaCha20Poly1305(ChaCha20Poly1305),
+    None,
 }
 
 impl VmessSecurity {
     #[inline(always)]
     pub fn overhead_len(&self) -> usize {
-        16
+        match self {
+            VmessSecurity::None => 0,
+            _ => 16,
+        }
     }
     #[inline(always)]
     pub fn nonce_len(&self) -> usize {
-        12
+        match self {
+            VmessSecurity::None => 0,
+            _ => 12,
+        }
     }
     #[inline(always)]
     pub fn tag_len(&self) -> usize {
-        16
+        match self {
+            VmessSecurity::None => 0,
+            _ => 16,
+        }
+    }
+    #[inline(always)]
+    pub fn is_none(&self) -> bool {
+        matches!(self, VmessSecurity::None)
     }
 }
 
@@ -74,10 +88,10 @@ impl VmessAeadWriter {
         W: AsyncWrite + Unpin,
     {
         loop {
-            if data.len() == 0 {
+            if data.is_empty() {
                 return Poll::Ready(Ok(0));
             }
-            let mut minimal_data_to_write =
+            let minimal_data_to_write =
                 cmp::min(CHUNK_SIZE - self.security.overhead_len(), data.len());
             let data = &data[..minimal_data_to_write];
             debug_log!("vmess: before encrypted data len:{}", data.len());
@@ -95,7 +109,16 @@ impl VmessAeadWriter {
     fn encrypted_buffer(&mut self, data: &[u8]) {
         self.data_len = data.len();
         debug_log!("raw data len:{}", self.data_len);
-        // 1. length is not encrypted
+        if self.security.is_none() {
+            // For none security, just write length + data (no encryption, no tag)
+            self.buffer.reserve(self.data_len + 2);
+            self.buffer.put_u16(self.data_len as u16);
+            self.buffer.put_slice(data);
+            self.count += 1;
+            self.pos = 0;
+            return;
+        }
+        // 1. length is not encrypted, but includes tag length
         self.buffer
             .reserve(self.data_len + 2 + self.security.tag_len());
         self.buffer
@@ -122,6 +145,7 @@ impl VmessAeadWriter {
                 cipher.encrypt_inplace_with_slice(&self.nonce[..nonce_len], &aad, mbuf);
                 unsafe { self.buffer.advance_mut(16) };
             }
+            VmessSecurity::None => unreachable!(),
         }
         debug_log!("encrypted buffer len3:{}", self.buffer.len());
         self.count += 1;
@@ -181,6 +205,9 @@ impl VmessAeadReader {
 
     impl_read_utils!();
     fn decrypted_data(&mut self) -> bool {
+        if self.security.is_none() {
+            return true;
+        }
         let aad = [0u8; 0];
         let nonce_len = self.security.nonce_len();
         match &mut self.security {
@@ -194,6 +221,7 @@ impl VmessAeadReader {
                 &aad,
                 &mut self.buffer[..self.data_length],
             ),
+            VmessSecurity::None => true,
         }
     }
 
@@ -236,33 +264,44 @@ impl VmessAeadReader {
                 }
                 return std::mem::replace(&mut self.read_res, Poll::Pending);
             }
-            // 3. construct nonce
-            self.nonce[0..2].copy_from_slice(&self.count.to_be_bytes());
-            self.nonce[2..12].copy_from_slice(&self.iv[2..12]);
+            if !self.security.is_none() {
+                // 3. construct nonce
+                self.nonce[0..2].copy_from_slice(&self.count.to_be_bytes());
+                self.nonce[2..12].copy_from_slice(&self.iv[2..12]);
 
-            // 4. decrypted data, includes aead tag
-            if !self.decrypted_data() {
-                debug_log!("read decrypted failed");
-                return Poll::Ready(Err(io::Error::new(ErrorKind::Other, "invalid aead tag")));
-            }
-            self.count += 1;
+                // 4. decrypted data, includes aead tag
+                if !self.decrypted_data() {
+                    debug_log!("read decrypted failed");
+                    return Poll::Ready(Err(io::Error::new(ErrorKind::Other, "invalid aead tag")));
+                }
+                self.count += 1;
 
-            debug_log!(
-                "data_length(include aead tag): {},buffer_len:{}",
-                self.data_length,
-                self.buffer.len()
-            );
-            self.data_length -= 16; //remove tag
-                                    // 5. put data
-            while self.calc_data_to_put(dst) != 0 {
-                dst.put_slice(&self.buffer.as_ref()[0..self.minimal_data_to_put]);
-                self.data_length -= self.minimal_data_to_put;
-                self.buffer.advance(self.minimal_data_to_put);
-                debug_log!("buffer len:{}", self.buffer.len());
-                debug_log!("put data len:{}", self.minimal_data_to_put);
-                co_yield(Poll::Ready(Ok(())));
+                debug_log!(
+                    "data_length(include aead tag): {},buffer_len:{}",
+                    self.data_length,
+                    self.buffer.len()
+                );
+                self.data_length -= 16; //remove tag
+                // 5. put data
+                while self.calc_data_to_put(dst) != 0 {
+                    dst.put_slice(&self.buffer.as_ref()[0..self.minimal_data_to_put]);
+                    self.data_length -= self.minimal_data_to_put;
+                    self.buffer.advance(self.minimal_data_to_put);
+                    debug_log!("buffer len:{}", self.buffer.len());
+                    debug_log!("put data len:{}", self.minimal_data_to_put);
+                    co_yield(Poll::Ready(Ok(())));
+                }
+                self.buffer.advance(16);
+            } else {
+                // None security: data is plain
+                self.count += 1;
+                while self.calc_data_to_put(dst) != 0 {
+                    dst.put_slice(&self.buffer.as_ref()[0..self.minimal_data_to_put]);
+                    self.data_length -= self.minimal_data_to_put;
+                    self.buffer.advance(self.minimal_data_to_put);
+                    co_yield(Poll::Ready(Ok(())));
+                }
             }
-            self.buffer.advance(16);
         }
     }
 }

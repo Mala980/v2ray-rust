@@ -40,25 +40,37 @@ impl Http2StreamBuilder {
     }
 
     fn req(&self) -> io::Result<Request<()>> {
-        let uri_idx = random::<usize>() % self.hosts.len();
+        // For Go compatibility, pick a random host from list
+        let host = if self.hosts.is_empty() {
+            // Go would use empty host? But we need something
+            "example.com"
+        } else {
+            let uri_idx = random::<usize>() % self.hosts.len();
+            self.hosts[uri_idx].as_str()
+        };
         let uri: Uri = {
             Uri::builder()
                 .scheme("https")
-                .authority(self.hosts[uri_idx].as_str())
+                .authority(host)
                 .path_and_query(self.path.as_str())
                 .build()
                 .map_err(new_error)?
         };
         let mut request = Request::builder()
-            //.method("GET")
             .uri(uri)
             .method(self.method.clone())
             .version(Version::HTTP_2);
+        // Add custom headers, matching Go's behavior
+        // Go's h2 transport allows setting arbitrary headers, but skips Host
+        // as it's set via authority. We mimic that.
         for (k, v) in self.headers.iter() {
-            if k != "Host" {
-                request = request.header(k.as_str(), v.as_str());
+            // Skip Host header as it's handled via authority, to match Go
+            if k.eq_ignore_ascii_case("Host") {
+                continue;
             }
+            request = request.header(k.as_str(), v.as_str());
         }
+        // Go's h2 transport also sets some default headers? For compatibility, we don't add extra.
         Ok(request.body(()).unwrap())
     }
 }
@@ -110,6 +122,7 @@ impl ChainableStreamBuilder for Http2StreamBuilder {
 }
 
 // Adapted from https://github.com/zephyrchien/midori/blob/master/src/transport/h2/stream.rs
+// For Go compatibility, this implements h2 transport as in v2ray-core
 pub struct Http2Stream {
     recv: RecvStream,
     send: SendStream<Bytes>,
@@ -144,11 +157,11 @@ impl AsyncRead for Http2Stream {
             Some(Ok(data)) => {
                 let to_read = std::cmp::min(buf.remaining(), data.len());
                 buf.put_slice(&data[..to_read]);
-                // copy the left payload into buffer
+                // copy the left payload into buffer for next read
                 if data.len() > to_read {
                     self.buffer.extend_from_slice(&data[to_read..]);
                 };
-                // increase recv window
+                // increase recv window - critical for flow control as in Go
                 self.recv
                     .flow_control()
                     .release_capacity(to_read)
@@ -157,10 +170,8 @@ impl AsyncRead for Http2Stream {
                         |_| Ok(()),
                     )
             }
-            // no more data frames
-            // maybe trailer
-            // or cancelled
-            _ => Ok(()),
+            Some(Err(e)) => Err(Error::new(ErrorKind::Other, e)),
+            None => Ok(()), // EOF
         })
     }
 }
@@ -172,18 +183,20 @@ impl AsyncWrite for Http2Stream {
         cx: &mut Context<'_>,
         buf: &[u8],
     ) -> Poll<io::Result<usize>> {
+        if buf.is_empty() {
+            return Poll::Ready(Ok(0));
+        }
         self.send.reserve_capacity(buf.len());
         Poll::Ready(match ready!(self.send.poll_capacity(cx)) {
-            Some(Ok(to_write)) => self
-                .send
-                .send_data(Bytes::from(buf[..to_write].to_owned()), false)
-                .map_or_else(
-                    |e| Err(Error::new(ErrorKind::BrokenPipe, e)),
-                    |_| Ok(to_write),
-                ),
-            // is_send_streaming returns false
-            // which indicates the state is
-            // neither open nor half_close_remote
+            Some(Ok(to_write)) => {
+                let to_write = std::cmp::min(to_write, buf.len());
+                self.send
+                    .send_data(Bytes::copy_from_slice(&buf[..to_write]), false)
+                    .map_or_else(
+                        |e| Err(Error::new(ErrorKind::BrokenPipe, e)),
+                        |_| Ok(to_write),
+                    )
+            }
             _ => Err(Error::new(ErrorKind::BrokenPipe, "broken pipe")),
         })
     }

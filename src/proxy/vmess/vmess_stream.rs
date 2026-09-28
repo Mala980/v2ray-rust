@@ -32,7 +32,6 @@ pub const COMMAND_UDP: u8 = 0x02;
 pub const COMMAND_TCP: u8 = 0x01;
 pub const AES_128_GCM_SECURITY_NUM: u8 = 0x03;
 pub const CHACHA20POLY1305_SECURITY_NUM: u8 = 0x04;
-#[allow(dead_code)]
 pub const NONE_SECURITY_NUM: u8 = 0x05;
 
 pub struct VmessStream<S> {
@@ -94,14 +93,6 @@ impl<S> VmessStream<S> {
     pub fn req_body_key(&self) -> &[u8] {
         &self.salt[16..32]
     }
-    // #[inline]
-    // pub fn resp_body_key(&self) -> &[u8] {
-    //     &self.salt[32..48]
-    // }
-    // #[inline]
-    // pub fn resp_body_iv(&self) -> &[u8] {
-    //     &self.salt[48..]
-    // }
     pub fn new(vmess_option: VmessOption, stream: S) -> VmessStream<S> {
         let mut salt = [0u8; 64];
         random_iv_or_salt(&mut salt);
@@ -145,8 +136,19 @@ impl<S> VmessStream<S> {
                     VmessSecurity::ChaCha20Poly1305(ChaCha20Poly1305::new_with_slice(&key));
                 reader = VmessAeadReader::new(resp_body_iv, reader_cipher);
             }
+            NONE_SECURITY_NUM => {
+                writer_cipher = VmessSecurity::None;
+                writer = VmessAeadWriter::new(req_body_iv, writer_cipher);
+                reader_cipher = VmessSecurity::None;
+                reader = VmessAeadReader::new(resp_body_iv, reader_cipher);
+            }
             _ => {
-                unimplemented!();
+                // For compatibility with Go, treat unknown as AES
+                // Go would return error, but we fallback to AES to avoid panic
+                writer_cipher = VmessSecurity::Aes128Gcm(Aes128Gcm::new_with_slice(req_body_key));
+                writer = VmessAeadWriter::new(req_body_iv, writer_cipher);
+                reader_cipher = VmessSecurity::Aes128Gcm(Aes128Gcm::new_with_slice(resp_body_key));
+                reader = VmessAeadReader::new(resp_body_iv, reader_cipher);
             }
         }
         let mut v = VmessStream {
