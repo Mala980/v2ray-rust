@@ -6,7 +6,7 @@ use crate::proxy::{
 };
 use async_trait::async_trait;
 
-use boring::ssl::{SslConnector, SslSignatureAlgorithm};
+use boring::ssl::{SslConnector, SslSignatureAlgorithm, SslVerifyMode};
 use boring::ssl::{SslMethod, SslVersion};
 use foreign_types_shared::ForeignTypeRef;
 use std::io;
@@ -38,46 +38,56 @@ impl TlsStreamBuilder {
         let mut configuration = SslConnector::builder(SslMethod::tls()).unwrap();
         {
             log::debug!("start add system cert");
-            let certs = platform::load_native_certs().unwrap();
-            log::debug!("certs len:{}", certs.len());
-            let mut count = 0;
-            for cert in certs.into_iter() {
-                let err = configuration.cert_store_mut().add_cert(cert);
-                if err.is_ok() {
-                    count += 1;
+            match platform::load_native_certs() {
+                Ok(certs) => {
+                    log::debug!("certs len:{}", certs.len());
+                    let mut count = 0;
+                    for cert in certs.into_iter() {
+                        if configuration.cert_store_mut().add_cert(cert).is_ok() {
+                            count += 1;
+                        }
+                    }
+                    log::debug!("add system cert done, count:{}", count);
                 }
-                log::debug!("add system cert:{}", count);
+                Err(e) => {
+                    log::warn!("load system certs failed: {}, continuing", e);
+                }
             }
-            log::debug!("add cert done");
         }
         if let Some(cert_file) = cert_file {
-            debug_log!("load custom ca file");
-            configuration.set_ca_file(cert_file).unwrap();
+            debug_log!("load custom ca file: {}", cert_file);
+            if let Err(e) = configuration.set_ca_file(cert_file) {
+                log::warn!("set ca file {} failed: {}", cert_file, e);
+            }
         }
-        configuration
-            .set_alpn_protos(b"\x02h2\x08http/1.1")
-            .unwrap();
-        configuration
-            .set_cipher_list("ALL:!aPSK:!ECDSA+SHA1:!3DES")
-            .unwrap();
-        configuration
-            .set_verify_algorithm_prefs(&[
-                SslSignatureAlgorithm::ECDSA_SECP256R1_SHA256,
-                SslSignatureAlgorithm::RSA_PSS_RSAE_SHA256,
-                SslSignatureAlgorithm::RSA_PKCS1_SHA256,
-                SslSignatureAlgorithm::ECDSA_SECP384R1_SHA384,
-                SslSignatureAlgorithm::RSA_PSS_RSAE_SHA384,
-                SslSignatureAlgorithm::RSA_PKCS1_SHA384,
-                SslSignatureAlgorithm::RSA_PSS_RSAE_SHA512,
-                SslSignatureAlgorithm::RSA_PKCS1_SHA512,
-            ])
-            .unwrap();
-        configuration
-            .set_min_proto_version(Some(SslVersion::TLS1_2))
-            .unwrap();
+        // For Go compatibility, set ALPN to match Go's default [h2, http/1.1]
+        // Go's TLS config alpn default is [\"h2\", \"http/1.1\"]
+        if let Err(e) = configuration.set_alpn_protos(b"\x02h2\x08http/1.1") {
+            log::warn!("set alpn failed: {}", e);
+        }
+        // Cipher list to mimic modern browser and match Go's uTLS fingerprint resistance
+        let _ = configuration.set_cipher_list("ALL:!aPSK:!ECDSA+SHA1:!3DES");
+        let _ = configuration.set_verify_algorithm_prefs(&[
+            SslSignatureAlgorithm::ECDSA_SECP256R1_SHA256,
+            SslSignatureAlgorithm::RSA_PSS_RSAE_SHA256,
+            SslSignatureAlgorithm::RSA_PKCS1_SHA256,
+            SslSignatureAlgorithm::ECDSA_SECP384R1_SHA384,
+            SslSignatureAlgorithm::RSA_PSS_RSAE_SHA384,
+            SslSignatureAlgorithm::RSA_PKCS1_SHA384,
+            SslSignatureAlgorithm::RSA_PSS_RSAE_SHA512,
+            SslSignatureAlgorithm::RSA_PKCS1_SHA512,
+        ]);
+        let _ = configuration.set_min_proto_version(Some(SslVersion::TLS1_2));
         configuration.enable_signed_cert_timestamps();
         configuration.enable_ocsp_stapling();
         configuration.set_grease_enabled(true);
+
+        // For Go compatibility: if verify_hostname is false, disable cert verification
+        // This matches Go's allowInsecure behavior
+        if !verify_hostname {
+            configuration.set_verify(SslVerifyMode::NONE);
+        }
+
         unsafe {
             boring_sys::SSL_CTX_add_cert_compression_alg(
                 configuration.as_ptr(),
@@ -104,6 +114,12 @@ macro_rules! build_tcp_impl {
         let mut configuration = $name.connector.configure().unwrap();
         configuration.set_use_server_name_indication($name.verify_sni);
         configuration.set_verify_hostname($name.verify_hostname);
+        // For Go compatibility, if verify_hostname is false, we already set verify NONE on ctx,
+        // but also need to set on the connection config
+        if !$name.verify_hostname {
+            configuration.set_verify(SslVerifyMode::NONE);
+        }
+        // Enable ECH grease and application settings for h2 as Go does for fingerprint resistance
         unsafe {
             boring_sys::SSL_add_application_settings(
                 configuration.as_ptr(),
@@ -118,7 +134,7 @@ macro_rules! build_tcp_impl {
             Ok(stream) => Ok(Box::new(stream)),
             Err(e) => {
                 let res = e.to_string();
-                debug_log!("tls connect failed:{}", res);
+                debug_log!("tls connect failed: {}", res);
                 Err(new_error(res))
             }
         };

@@ -1,0 +1,54 @@
+# Free Config - ASIA+VMESS-WS NTLS (2026-10-05)
+# vmess://eyJhZGQiOiJhc2lhMS5mdWZvLm9yZyIsImFpZCI6IjAiLCJhbHBuIjoiIiwiZnAiOiIiLCJob3N0IjoiIiwiaWQiOiI0NDczZmQwMC1iYWFmLTExZjEtYjAzNy0yMDVjNmQ1ZjVkNzgiLCJuZXQiOiJ3cyIsInBhdGgiOiIvdm13cyIsInBvcnQiOiI4MCIsInBzIjoiQVNJQStWTUVTUy1XUyBOVExTKDIwMjYtMTAtMDUpIiwic2N5Ijoibm9uZSIsInNuaSI6IiIsInRscyI6IiIsInR5cGUiOiIiLCJ2IjoiMiJ9
+# Decoded: add=asia1.fufo.org port=80 net=ws path=/vmws tls= sni= scy=none
+# Test: curl -x socks5h://127.0.0.1:1080 https://ifconfig.me
+
+[[vmess]]
+addr = "asia1.fufo.org:80"
+uuid = "4473fd00-baaf-11f1-b037-205c6d5f5d78"
+method = "none"
+tag = "vmess"
+
+[[ws]]
+uri = "ws://asia1.fufo.org:80/vmws?ed=2048"
+tag = "ws"
+
+[[direct]]
+tag = "direct"
+
+[[blackhole]]
+tag = "block"
+
+[[outbounds]]
+chain = ["ws", "vmess"]
+tag = "proxy"
+
+[[outbounds]]
+chain = ["direct"]
+tag = "direct-out"
+
+[[outbounds]]
+chain = ["block"]
+tag = "block-out"
+
+[[inbounds]]
+addr = "127.0.0.1:1080"
+enable_udp = true
+tag = "socks"
+
+[[inbounds]]
+addr = "127.0.0.1:1081"
+tag = "http"
+
+# Routing
+[[geoip_rules]]
+tag = "direct-out"
+rules = ["private"]
+
+[[geosite_rules]]
+tag = "direct-out"
+rules = ["cn"]
+
+[[geosite_rules]]
+tag = "block-out"
+rules = ["category-ads-all"]

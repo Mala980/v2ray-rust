@@ -1,0 +1,24 @@
+# VMess tanpa TLS - Go parity
+# Cocok untuk testing lokal atau server tanpa TLS
+
+[[vmess]]
+addr = "1.2.3.4:10002"
+uuid = "b831381d-6324-4d53-ad4f-8cda48b30811"
+method = "aes-128-gcm"
+tag = "vmess"
+
+[[direct]]
+tag = "direct"
+
+[[outbounds]]
+chain = ["vmess"]
+tag = "proxy"
+
+[[outbounds]]
+chain = ["direct"]
+tag = "direct-out"
+
+[[inbounds]]
+addr = "127.0.0.1:1080"
+enable_udp = true
+tag = "socks"

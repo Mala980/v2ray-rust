@@ -1,0 +1,31 @@
+# VLESS + gRPC + TLS - Go parity
+
+[[vless]]
+addr = "1.2.3.4:443"
+uuid = "b831381d-6324-4d53-ad4f-8cda48b30811"
+tag = "vless"
+
+[[grpc]]
+host = "example.com:443"
+service_name = "GunService"
+tag = "grpc"
+
+[[tls]]
+sni = "example.com"
+tag = "tls"
+
+[[direct]]
+tag = "direct"
+
+[[outbounds]]
+chain = ["tls", "grpc", "vless"]
+tag = "proxy"
+
+[[outbounds]]
+chain = ["direct"]
+tag = "direct-out"
+
+[[inbounds]]
+addr = "127.0.0.1:1080"
+enable_udp = true
+tag = "socks"

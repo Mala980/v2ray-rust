@@ -51,28 +51,51 @@ impl<T: ProxySteam> AsyncRead for BinaryWsStream<T> {
             }
             let message = ready!(Pin::new(&mut self.inner).poll_next(cx));
             if message.is_none() {
-                return Poll::Ready(Err(new_error("websocket stream drained")));
+                // For Go compatibility, drained stream should return Ok(()) to signal EOF, not error
+                return Poll::Ready(Ok(()));
             }
             let message = message.unwrap().map_err(new_error)?;
-            // binary only
+            // For Go compatibility, handle both Binary and Text, and ignore Ping/Pong
             match message {
                 Message::Binary(binary) => {
-                    if binary.len() < buf.remaining() {
+                    if binary.is_empty() {
+                        continue;
+                    }
+                    if binary.len() <= buf.remaining() {
                         buf.put_slice(&binary);
                         return Poll::Ready(Ok(()));
                     } else {
-                        self.read_buffer = Some(Bytes::from(binary));
+                        let to_write = buf.remaining();
+                        buf.put_slice(&binary[..to_write]);
+                        self.read_buffer = Some(Bytes::from(binary[to_write..].to_vec()));
+                        return Poll::Ready(Ok(()));
+                    }
+                }
+                Message::Text(text) => {
+                    // Go's websocket can carry text, treat as binary for compatibility
+                    let binary = text.into_bytes();
+                    if binary.is_empty() {
                         continue;
+                    }
+                    if binary.len() <= buf.remaining() {
+                        buf.put_slice(&binary);
+                        return Poll::Ready(Ok(()));
+                    } else {
+                        let to_write = buf.remaining();
+                        buf.put_slice(&binary[..to_write]);
+                        self.read_buffer = Some(Bytes::from(binary[to_write..].to_vec()));
+                        return Poll::Ready(Ok(()));
                     }
                 }
                 Message::Close(_) => {
                     return Poll::Ready(Ok(()));
                 }
-                _ => {
-                    return Poll::Ready(Err(new_error(format!(
-                        "invalid message type {:?}",
-                        message
-                    ))))
+                Message::Ping(_) | Message::Pong(_) => {
+                    // Ignore ping/pong, as Go does, and continue reading
+                    continue;
+                }
+                Message::Frame(_) => {
+                    continue;
                 }
             }
         }
@@ -85,9 +108,12 @@ impl<T: ProxySteam> AsyncWrite for BinaryWsStream<T> {
         cx: &mut Context<'_>,
         buf: &[u8],
     ) -> Poll<Result<usize, io::Error>> {
+        if buf.is_empty() {
+            return Poll::Ready(Ok(0));
+        }
         ready!(Pin::new(&mut self.inner).poll_ready(cx))
             .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("{:?}", e)))?;
-        let message = Message::Binary(buf.into());
+        let message = Message::Binary(buf.to_vec());
         Pin::new(&mut self.inner)
             .start_send(message)
             .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("{:?}", e)))?;
@@ -105,9 +131,9 @@ impl<T: ProxySteam> AsyncWrite for BinaryWsStream<T> {
         mut self: Pin<&mut Self>,
         cx: &mut Context<'_>,
     ) -> Poll<Result<(), io::Error>> {
-        debug_log!("shut down");
-        ready!(Pin::new(&mut self.inner).poll_ready(cx))
-            .map_err(|e| io::Error::new(io::ErrorKind::Other, format!("{:?}", e)))?;
+        debug_log!("shut down ws");
+        // Try to send close frame, but don't fail if not ready
+        let _ = Pin::new(&mut self.inner).poll_ready(cx);
         let message = Message::Close(None);
         let _ = Pin::new(&mut self.inner).start_send(message);
 
@@ -158,11 +184,13 @@ impl BinaryWsStreamBuilder {
     }
 
     fn req(&self) -> Request<()> {
-        let authority = self.uri.authority().unwrap().as_str();
+        let authority = self.uri.authority().map(|a| a.as_str()).unwrap_or("");
+        // Handle userinfo in authority (e.g. user:pass@host) - strip it for Host header
         let host = authority
             .find('@')
             .map(|idx| authority.split_at(idx + 1).1)
-            .unwrap_or_else(|| authority);
+            .unwrap_or(authority);
+        // For Go compatibility, Host header defaults to authority's host part
         let mut request = Request::builder()
             .method("GET")
             .header("Host", host)
@@ -171,14 +199,14 @@ impl BinaryWsStreamBuilder {
             .header("Sec-WebSocket-Version", "13")
             .header("Sec-WebSocket-Key", generate_key())
             .uri(self.uri.clone());
+        // Add custom headers, allowing Host override if provided (Go allows this)
         for (k, v) in self.headers.iter() {
-            if k != "Host" {
-                request = request.header(k.as_str(), v.as_str());
-            }
+            // If custom Host header is provided, it will override the default
+            request = request.header(k.as_str(), v.as_str());
         }
-        if self.max_early_data > 0 {
-            // we will replace this field later
-            request = request.header(self.early_data_header_name.as_str(), "s");
+        if self.max_early_data > 0 && !self.early_data_header_name.is_empty() {
+            // we will replace this field later with base64 early data
+            request = request.header(self.early_data_header_name.as_str(), "");
         }
         request.body(()).unwrap()
     }
@@ -188,7 +216,7 @@ impl BinaryWsStreamBuilder {
 impl ChainableStreamBuilder for BinaryWsStreamBuilder {
     async fn build_tcp(&self, io: BoxProxyStream) -> io::Result<BoxProxyStream> {
         let req = self.req();
-        if self.max_early_data > 0 {
+        if self.max_early_data > 0 && !self.early_data_header_name.is_empty() {
             debug_log!("build tcp ws-0-rtt");
             return Ok(Box::new(BinaryWsStreamWithEarlyData::new(
                 io,
@@ -215,7 +243,7 @@ impl ChainableStreamBuilder for BinaryWsStreamBuilder {
     ) -> io::Result<BoxProxyUdpStream> {
         if build_tcp_inside {
             let req = self.req();
-            if self.max_early_data > 0 {
+            if self.max_early_data > 0 && !self.early_data_header_name.is_empty() {
                 debug_log!("build tcp ws-0-rtt");
                 let io = Box::new(BinaryWsStreamWithEarlyData::new(
                     Box::new(io),

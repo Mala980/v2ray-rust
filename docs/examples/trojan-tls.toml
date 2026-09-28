@@ -1,0 +1,31 @@
+# Trojan + TLS - Go parity
+# Trojan mirip HTTPS, tahan DPI
+
+[[trojan]]
+addr = "1.2.3.4:443"
+password = "your-trojan-password"
+tag = "trojan"
+
+[[tls]]
+sni = "example.com"
+tag = "tls"
+
+[[direct]]
+tag = "direct"
+
+[[outbounds]]
+chain = ["tls", "trojan"]
+tag = "proxy"
+
+[[outbounds]]
+chain = ["direct"]
+tag = "direct-out"
+
+[[inbounds]]
+addr = "127.0.0.1:1080"
+enable_udp = true
+tag = "socks"
+
+[[inbounds]]
+addr = "127.0.0.1:1081"
+tag = "http"

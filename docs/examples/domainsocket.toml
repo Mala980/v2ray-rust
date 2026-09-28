@@ -1,0 +1,33 @@
+# DomainSocket (Unix Domain Socket) - Go parity
+# Hanya Linux/macOS, tidak support Windows
+
+[[vmess]]
+addr = "1.2.3.4:10002"
+uuid = "b831381d-6324-4d53-ad4f-8cda48b30811"
+method = "aes-128-gcm"
+tag = "vmess"
+
+[[domainsocket]]
+path = "/tmp/v2ray.sock"
+tag = "ds"
+
+[[direct]]
+tag = "direct"
+
+[[outbounds]]
+chain = ["ds", "vmess"]
+tag = "proxy"
+
+[[outbounds]]
+chain = ["direct"]
+tag = "direct-out"
+
+[[inbounds]]
+addr = "127.0.0.1:1080"
+enable_udp = true
+tag = "socks"
+
+# Server side bisa listen di Unix socket:
+# [[dokodemo]]
+# addr = "/tmp/v2ray.sock"
+# Di v2ray-rust, domainsocket outbound connect ke path tersebut

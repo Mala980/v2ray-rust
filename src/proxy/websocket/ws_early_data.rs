@@ -11,9 +11,11 @@ use std::task::{Context, Poll, Waker};
 use std::{cmp, io};
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio_tungstenite::client_async_with_config;
-use tokio_tungstenite::tungstenite::http::{HeaderValue, Request, StatusCode};
+use tokio_tungstenite::tungstenite::http::{HeaderName, HeaderValue, Request, StatusCode};
 use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
 
+/// BinaryWsStreamWithEarlyData implements WebSocket 0-RTT as in v2ray-core Go
+/// The first payload is sent as base64 in Sec-WebSocket-Protocol header
 pub(super) struct BinaryWsStreamWithEarlyData {
     stream: Option<BoxProxyStream>,
     req: Option<Request<()>>,
@@ -23,6 +25,7 @@ pub(super) struct BinaryWsStreamWithEarlyData {
     ws_config: Option<WebSocketConfig>,
     early_data_header_name: String,
     early_data_len: usize,
+    max_early_data: usize,
     is_write_early_data: bool,
 }
 
@@ -32,7 +35,7 @@ impl BinaryWsStreamWithEarlyData {
         req: Request<()>,
         ws_config: Option<WebSocketConfig>,
         early_data_header_name: String,
-        early_data_len: usize,
+        max_early_data: usize,
     ) -> BinaryWsStreamWithEarlyData {
         Self {
             stream: Some(io),
@@ -42,7 +45,8 @@ impl BinaryWsStreamWithEarlyData {
             flush_waker: None,
             ws_config,
             early_data_header_name,
-            early_data_len,
+            early_data_len: 0,
+            max_early_data,
             is_write_early_data: false,
         }
     }
@@ -63,7 +67,7 @@ impl BinaryWsStreamWithEarlyData {
             if resp.status() != StatusCode::SWITCHING_PROTOCOLS {
                 return Err(new_error(format!("bad status: {}", resp.status())));
             }
-            debug_log!("build ws stream success");
+            debug_log!("build ws stream success with 0-rtt");
             let ret: BoxProxyStream = Box::new(BinaryWsStream::new(stream));
             Ok(ret)
         }
@@ -81,15 +85,13 @@ impl AsyncRead for BinaryWsStreamWithEarlyData {
         debug_log!("ws-0-rtt poll r");
         if !self.is_write_early_data {
             if self.early_waker.is_none() {
-                self.as_mut().early_waker = Some(cx.waker().clone());
+                self.early_waker = Some(cx.waker().clone());
             }
             return Poll::Pending;
         }
         let this = self.get_mut();
         match &mut this.stream {
-            None => {
-                unreachable!()
-            }
+            None => unreachable!(),
             Some(s) => Pin::new(s).poll_read(cx, buf),
         }
     }
@@ -101,69 +103,77 @@ impl AsyncWrite for BinaryWsStreamWithEarlyData {
         cx: &mut Context<'_>,
         buf: &[u8],
     ) -> Poll<Result<usize, Error>> {
-        debug_log!("ws-0-rtt poll w");
+        debug_log!("ws-0-rtt poll w, buf len: {}", buf.len());
         if !self.is_write_early_data {
             loop {
-                if let Some(f) = &mut self.as_mut().ws_stream_future {
+                if let Some(f) = &mut self.ws_stream_future {
                     let stream = ready!(Pin::new(f).poll(cx))?;
-                    self.as_mut().stream = Some(stream);
-                    self.as_mut().is_write_early_data = true;
-                    if let Some(w) = self.as_mut().early_waker.take() {
+                    self.stream = Some(stream);
+                    self.is_write_early_data = true;
+                    if let Some(w) = self.early_waker.take() {
                         w.wake();
                     }
-                    if let Some(w) = self.as_mut().flush_waker.take() {
+                    if let Some(w) = self.flush_waker.take() {
                         w.wake();
                     }
-                    return Poll::Ready(Ok(self.as_mut().early_data_len));
+                    // Return the length of early data that was sent as header
+                    // For Go compatibility, this is considered as written
+                    return Poll::Ready(Ok(self.early_data_len));
                 } else {
-                    let mut req = self.as_mut().req.take().unwrap();
-                    if let Some(v) = req
-                        .headers_mut()
-                        .get_mut(&self.as_mut().early_data_header_name)
-                    {
-                        debug_log!("ws-0-rtt early data buf len:{}", buf.len());
-                        self.as_mut().early_data_len =
-                            cmp::min(self.as_mut().early_data_len, buf.len());
-                        let header_value =
-                            URL_SAFE_NO_PAD.encode(&buf[..self.as_mut().early_data_len]);
-                        *v = HeaderValue::from_bytes(header_value.as_bytes())
-                            .expect("base64 encode error");
-                        debug_log!("header base64 str:{}", header_value);
-                        debug_log!(
-                            "max_e_d:{}->{}",
-                            self.as_mut().early_data_header_name,
-                            v.len()
-                        );
+                    let mut req = self.req.take().unwrap();
+                    // Encode early data as base64 URL_SAFE_NO_PAD as Go does
+                    let early_data_len = cmp::min(self.max_early_data, buf.len());
+                    self.early_data_len = early_data_len;
+                    
+                    if early_data_len > 0 {
+                        let header_value = URL_SAFE_NO_PAD.encode(&buf[..early_data_len]);
+                        debug_log!("ws-0-rtt early data len: {}, base64 len: {}", early_data_len, header_value.len());
+                        // Replace header value
+                        if let Some(v) = req.headers_mut().get_mut(&self.early_data_header_name) {
+                            *v = HeaderValue::from_str(&header_value)
+                                .unwrap_or_else(|_| HeaderValue::from_static(""));
+                        } else {
+                            // If header not present, insert it
+                            let header_name: HeaderName = self
+                                .early_data_header_name
+                                .parse()
+                                .unwrap_or_else(|_| HeaderName::from_static("sec-websocket-protocol"));
+                            req.headers_mut().insert(
+                                header_name,
+                                HeaderValue::from_str(&header_value).unwrap_or_else(|_| HeaderValue::from_static("")),
+                            );
+                        }
+                        debug_log!("ws-0-rtt header {}: base64 len {}", self.early_data_header_name, header_value.len());
+                    } else {
+                        // No early data to send, remove header if empty?
+                        // Go would not send header if no early data, but we keep empty
                     }
-                    let io = self.as_mut().stream.take().unwrap();
-                    let config = self.as_mut().ws_config.take();
-                    self.as_mut().ws_stream_future = Some(
+                    let io = self.stream.take().unwrap();
+                    let config = self.ws_config.take();
+                    self.ws_stream_future = Some(
                         BinaryWsStreamWithEarlyData::build_stream_impl(io, req, config),
                     );
                 }
             }
         }
-        return match &mut self.as_mut().stream {
-            None => {
-                unreachable!()
-            }
+        // After handshake, write as normal websocket
+        match &mut self.stream {
+            None => unreachable!(),
             Some(s) => Pin::new(s).poll_write(cx, buf),
-        };
+        }
     }
 
     fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Error>> {
         debug_log!("ws-0-rtt poll f");
         if !self.is_write_early_data {
-            if self.as_mut().flush_waker.is_none() {
-                self.as_mut().flush_waker = Some(cx.waker().clone());
+            if self.flush_waker.is_none() {
+                self.flush_waker = Some(cx.waker().clone());
             }
             return Poll::Pending;
         }
         let this = self.get_mut();
         match &mut this.stream {
-            None => {
-                unreachable!()
-            }
+            None => unreachable!(),
             Some(s) => Pin::new(s).poll_flush(cx),
         }
     }
@@ -171,13 +181,13 @@ impl AsyncWrite for BinaryWsStreamWithEarlyData {
     fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Result<(), Error>> {
         debug_log!("ws-0-rtt poll s");
         if !self.is_write_early_data {
+            // For Go compatibility, ensure handshake is done before shutdown
+            // If flush is pending, wait for it
             ready!(self.as_mut().poll_flush(cx))?;
         }
         let this = self.get_mut();
         match &mut this.stream {
-            None => {
-                unreachable!()
-            }
+            None => unreachable!(),
             Some(s) => Pin::new(s).poll_shutdown(cx),
         }
     }

@@ -1,0 +1,28 @@
+# VLESS + TLS - Go parity (tanpa XTLS flow)
+# VLESS lebih ringan dari VMess, tanpa alterId
+
+[[vless]]
+addr = "1.2.3.4:443"
+uuid = "b831381d-6324-4d53-ad4f-8cda48b30811"
+# flow opsional, misal "xtls-rprx-vision" (belum full support)
+tag = "vless"
+
+[[tls]]
+sni = "example.com"
+tag = "tls"
+
+[[direct]]
+tag = "direct"
+
+[[outbounds]]
+chain = ["tls", "vless"]
+tag = "proxy"
+
+[[outbounds]]
+chain = ["direct"]
+tag = "direct-out"
+
+[[inbounds]]
+addr = "127.0.0.1:1080"
+enable_udp = true
+tag = "socks"

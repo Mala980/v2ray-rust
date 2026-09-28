@@ -1,0 +1,39 @@
+# VMess + WebSocket + TLS - Paling umum, Go parity
+# Ini yang dipakai Cloudflare, CDN, dll
+
+[[vmess]]
+addr = "1.2.3.4:443"
+uuid = "b831381d-6324-4d53-ad4f-8cda48b30811"
+method = "aes-128-gcm"
+tag = "vmess"
+
+[[ws]]
+uri = "wss://example.com:443/ws?ed=2048"
+# ed=2048 = early data max 2048 bytes (0-RTT)
+# headers opsional:
+# headers = { Host = "example.com" }
+tag = "ws"
+
+[[tls]]
+sni = "example.com"
+tag = "tls"
+
+[[direct]]
+tag = "direct"
+
+[[outbounds]]
+chain = ["tls", "ws", "vmess"]
+tag = "proxy"
+
+[[outbounds]]
+chain = ["direct"]
+tag = "direct-out"
+
+[[inbounds]]
+addr = "127.0.0.1:1080"
+enable_udp = true
+tag = "socks"
+
+[[inbounds]]
+addr = "127.0.0.1:1081"
+tag = "http"

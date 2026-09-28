@@ -76,7 +76,8 @@ fn encrypt_payload_aead(
     let salt = &mut dst[..salt_len];
 
     if salt_len > 0 {
-        context.generate_nonce(salt, false);
+        // For Go compatibility, generate unique nonce to prevent replay
+        context.generate_nonce(salt, true);
         trace!("UDP packet generated aead salt {:?}", ByteStr::new(salt));
     }
 
@@ -95,6 +96,7 @@ fn encrypt_payload_aead(
 
 /// Decrypt payload from ShadowSocks UDP encrypted packet
 pub fn decrypt_payload(
+    context: Option<&BloomContext>,
     method: CipherKind,
     key: &[u8],
     payload: &mut [u8],
@@ -116,11 +118,12 @@ pub fn decrypt_payload(
             }
         }
         // aead
-        _ => decrypt_payload_aead(method, key, payload),
+        _ => decrypt_payload_aead(context, method, key, payload),
     }
 }
 
 fn decrypt_payload_aead(
+    context: Option<&BloomContext>,
     method: CipherKind,
     key: &[u8],
     payload: &mut [u8],
@@ -133,9 +136,15 @@ fn decrypt_payload_aead(
     }
 
     let (salt, data) = payload.split_at_mut(salt_len);
-    // context.check_nonce_replay(salt)?;
 
     trace!("UDP packet got AEAD salt {:?}", ByteStr::new(salt));
+
+    // Check replay attack for Go compatibility
+    if let Some(ctx) = context {
+        if ctx.check_nonce_and_set(salt) {
+            return Err(Error::new(ErrorKind::Other, "detected repeated salt"));
+        }
+    }
 
     let tag_len = method.tag_len();
     let mut cipher = AeadCipher::new(method, key, salt);
@@ -218,7 +227,8 @@ impl<T: UdpRead + Unpin> ShadowSocksUdpStream<T> {
     ) -> Poll<io::Result<Address>> {
         let r = Pin::new(&mut this.stream);
         let _ = ready!(r.poll_recv_from(cx, dst))?;
-        let (n, addr) = decrypt_payload(this.method, &this.key, dst.filled_mut())?;
+        // For Go compatibility, pass context for replay check
+        let (n, addr) = decrypt_payload(Some(&this.context), this.method, &this.key, dst.filled_mut())?;
         dst.set_filled(n);
         debug_log!("recv from addr:{}, len:{}", addr, dst.filled().len());
         Ok(addr).into()

@@ -1,0 +1,27 @@
+# Direct Test - untuk test binary tanpa server luar
+# Jalankan: ./v2ray-rust -c docs/examples/direct-test.toml
+# Test: curl -x socks5h://127.0.0.1:1080 https://ifconfig.me
+
+[[direct]]
+tag = "direct"
+
+[[outbounds]]
+chain = ["direct"]
+tag = "proxy"
+
+[[outbounds]]
+chain = ["direct"]
+tag = "direct-out"
+
+[[inbounds]]
+addr = "127.0.0.1:1080"
+enable_udp = true
+tag = "socks"
+
+[[inbounds]]
+addr = "127.0.0.1:1081"
+tag = "http"
+
+# Optional API server untuk debug
+enable_api_server = true
+api_server_addr = "127.0.0.1:1999"
