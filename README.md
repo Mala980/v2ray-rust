@@ -9,7 +9,7 @@ An Opinionated Lightweight Implementation of V2Ray, in Rust Programming Language
 
 > Fork of [Qv2ray/v2ray-rust](https://github.com/Qv2ray/v2ray-rust) with VLESS, TPROXY, VMess AEAD, WebSocket early data, gRPC, H2, DomainSocket, and 8-target CI.
 
-**Latest CI:** ✅ **8/8 green** on `arena/01a0dc70-v2ray-rust` — Run [#36412693852](https://github.com/Mala980/v2ray-rust/actions/runs/36412693852) (2026-09-28) — **Node 24 (no Node20 warnings) + Android static (ultra aggressive) + docs + ubuntu-24.04**
+**Latest CI:** ✅ **8/8 green** on `arena/01a0dc70-v2ray-rust` — Run [#36424556508](https://github.com/Mala980/v2ray-rust/actions/runs/36424556508) (2026-09-28) — **Node 24 (no Node20 warnings) + Android truly static (no libc++_shared.so, patchelf) + docs + ubuntu-24.04**
 - Linux-x86_64, Linux-aarch64, Linux-armv7, Windows-x86_64 (windows-2022), macOS-x64 (macos-14), macOS-arm64 (macos-14), Android-aarch64, Android-armv7 — all success.
 - BoringSSL **5.2.0** (from 4.2.0) fixes Windows VS 18 + PEM bindings.
 - Windows: `windows-2022` (VS 17 2022), `omdxp/msvc-dev-cmd@v1` (Node 24 fork), remove Git `link.exe` shadowing MSVC.
