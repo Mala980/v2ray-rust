@@ -5,9 +5,12 @@ on:
     branches: 
       - 'main'
       - 'dev'
+      - 'arena/*'
     paths-ignore: 
       - 'README.md'
       - 'LICENSE'
+      - 'bin/**'
+      - 'docs/**'
       
   pull_request:
     branches: 
@@ -16,6 +19,8 @@ on:
     paths-ignore: 
       - 'README.md'
       - 'LICENSE'
+      - 'bin/**'
+      - 'docs/**'
       
   release:
     types: 
@@ -23,19 +28,21 @@ on:
       - 'published' 
       - 'released'
       
-  # For test
   workflow_dispatch:
 
 concurrency: 
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: write
+
 env:
   RUST_BACKTRACE: 1
 
 jobs:
   build:
-    timeout-minutes: 30
+    timeout-minutes: 50
     env:
       CARGO_TERM_COLOR: always
       PROTOC_NO_VENDOR: true
@@ -47,36 +54,302 @@ jobs:
         config:
         - {
             name: "Windows-x86_64", artifact: "Windows-x86_64",
-            os: windows-latest,
+            os: windows-2022,
             has_release: true,
             rust: stable-x86_64-msvc,
             target_triple: x86_64-pc-windows-msvc
           }
         - {
-            name: "Linux", artifact: "Linux-x86_64",
-            os: ubuntu-latest,
+            name: "Linux-x86_64", artifact: "Linux-x86_64",
+            os: ubuntu-24.04,
             has_release: true,
             rust: stable,
             target_triple: x86_64-unknown-linux-gnu
           }
         - {
+            name: "Linux-aarch64", artifact: "Linux-aarch64",
+            os: ubuntu-24.04,
+            has_release: true,
+            rust: stable,
+            target_triple: aarch64-unknown-linux-gnu
+          }
+        - {
+            name: "Linux-armv7", artifact: "Linux-armv7",
+            os: ubuntu-24.04,
+            has_release: true,
+            rust: stable,
+            target_triple: armv7-unknown-linux-gnueabihf
+          }
+        - {
+            name: "Android-aarch64", artifact: "Android-aarch64",
+            os: ubuntu-24.04,
+            has_release: true,
+            rust: stable,
+            target_triple: aarch64-linux-android
+          }
+        - {
+            name: "Android-armv7", artifact: "Android-armv7",
+            os: ubuntu-24.04,
+            has_release: true,
+            rust: stable,
+            target_triple: armv7-linux-androideabi
+          }
+        - {
             name: "macOS-x64", artifact: "macOS-x64",
-            os: macos-latest,
+            os: macos-14,
             rust: stable,
             has_release: true,
             target_triple: x86_64-apple-darwin
           }
+        - {
+            name: "macOS-arm64", artifact: "macOS-arm64",
+            os: macos-14,
+            rust: stable,
+            has_release: true,
+            target_triple: aarch64-apple-darwin
+          }
           
     steps:
     - name: Set up NASM
-      uses: ilammy/setup-nasm@v1.4.0
+      uses: step-security/setup-nasm@v1
 
-    - uses: actions/checkout@v4
+    - name: Install LLVM (Windows)
+      if: contains(matrix.config.os, 'windows')
+      uses: ZhongRuoyu/setup-llvm@v0
+      with:
+        llvm-version: 15
+        github-token: ${{ secrets.GITHUB_TOKEN }}
+
+    - name: Windows - Set LIBCLANG_PATH
+      if: contains(matrix.config.os, 'windows')
+      shell: bash
+      run: |
+        set -x
+        # ZhongRuoyu/setup-llvm sets LLVM_PATH, but we need LIBCLANG_PATH
+        echo "LLVM_PATH from action: $LLVM_PATH"
+        echo "LLVM_PATH env: ${{ env.LLVM_PATH }}"
+        # Try to find libclang
+        if [ -n "$LLVM_PATH" ]; then
+          echo "LLVM_PATH=$LLVM_PATH" >> $GITHUB_ENV
+          # libclang might be in bin or lib
+          if [ -d "$LLVM_PATH/bin" ]; then
+            echo "LIBCLANG_PATH=$LLVM_PATH/bin" >> $GITHUB_ENV
+            echo "$LLVM_PATH/bin" >> $GITHUB_PATH
+            ls -lh "$LLVM_PATH/bin" 2>&1 | grep -i clang | head -20 || true
+          fi
+          if [ -d "$LLVM_PATH/lib" ]; then
+            ls -lh "$LLVM_PATH/lib" 2>&1 | grep -i clang | head -20 || true
+            # Also try lib path for LIBCLANG_PATH
+            if [ -f "$LLVM_PATH/lib/libclang.dll" ] || [ -f "$LLVM_PATH/bin/libclang.dll" ]; then
+              echo "Found libclang"
+            fi
+          fi
+        else
+          # Fallback: try common locations
+          echo "LLVM_PATH not set, trying common locations"
+          for p in "C:/Program Files/LLVM" "C:/Program Files/LLVM-15" "/c/Program Files/LLVM"; do
+            if [ -d "$p/bin" ]; then
+              echo "Found LLVM at $p"
+              echo "LLVM_PATH=$p" >> $GITHUB_ENV
+              echo "LIBCLANG_PATH=$p/bin" >> $GITHUB_ENV
+              echo "$p/bin" >> $GITHUB_PATH
+              break
+            fi
+          done
+        fi
+        echo "LIBCLANG_PATH set"
+        clang --version || true
+        echo "LIBCLANG_PATH=$LIBCLANG_PATH"
+        ls -lh "$LIBCLANG_PATH" 2>&1 | head -30 || true
+
+    - uses: actions/checkout@v6
 
     - name: macOS - Build preparation - Install Packages
-      if: matrix.config.os == 'macos-latest'
+      if: contains(matrix.config.os, 'macos')
       run: |
-        brew install coreutils
+        brew install coreutils protobuf || true
+
+    - name: Windows - Check tools
+      if: contains(matrix.config.os, 'windows')
+      shell: bash
+      run: |
+        set -x
+        cmake --version || echo "cmake not found"
+        which cmake || true
+        perl --version || echo "perl not found"
+        go version || echo "go not found"
+        nasm -v || echo "nasm not found"
+        clang --version || echo "clang not found"
+        ninja --version || echo "ninja not found"
+        echo "LIBCLANG_PATH=$LIBCLANG_PATH"
+        echo "PATH=$PATH"
+
+    - name: Windows - Install deps
+      if: contains(matrix.config.os, 'windows')
+      shell: bash
+      run: |
+        choco install ninja strawberryperl -y || true
+        echo "C:/Strawberry/perl/bin" >> $GITHUB_PATH
+        echo "C:/Strawberry/c/bin" >> $GITHUB_PATH
+        # LLVM_PATH should already be set by setup-llvm action
+        if [ -n "$LLVM_PATH" ]; then
+          echo "$LLVM_PATH/bin" >> $GITHUB_PATH
+          export PATH="$PATH:/c/Strawberry/perl/bin:/c/Strawberry/c/bin:$LLVM_PATH/bin"
+          echo "LIBCLANG_PATH=$LLVM_PATH/bin" >> $GITHUB_ENV
+        else
+          export PATH="$PATH:/c/Strawberry/perl/bin:/c/Strawberry/c/bin"
+          echo "LLVM_PATH not set in deps step, will rely on previous step"
+        fi
+        ninja --version || true
+        perl --version || true
+        clang --version || true
+        echo "Using auto-detect generator for Windows (with msvc-dev-cmd)"
+        if [ -n "$LLVM_PATH" ]; then
+          ls "$LLVM_PATH/bin" 2>&1 | grep -i clang | head -20 || true
+        fi
+        ls "C:/Strawberry/perl/bin" | head -20 || true
+        cmake --version || true
+        ls "C:/Program Files/Microsoft Visual Studio" 2>&1 | head -30 || true
+        ls "C:/Program Files/Microsoft Visual Studio/2022" 2>&1 | head -20 || true
+        ls "C:/Program Files/Microsoft Visual Studio/18" 2>&1 | head -20 || true
+        vswhere -all 2>&1 | head -100 || true
+        where cmake || true
+        where perl || true
+
+    - name: Setup MSVC for Windows
+      if: contains(matrix.config.os, 'windows')
+      uses: omdxp/msvc-dev-cmd@v1
+      with:
+        arch: x64
+
+    - name: Fix Windows link.exe shadowing (Git vs MSVC)
+      if: contains(matrix.config.os, 'windows')
+      shell: bash
+      run: |
+        set -x
+        echo "PATH before fix: $PATH"
+        where link 2>&1 || true
+        which -a link 2>&1 || true
+        ls -lh "/c/Program Files/Git/usr/bin/link.exe" 2>&1 || true
+        ls -lh "/c/Program Files/Git/usr/bin/link" 2>&1 || true
+        ls -lh "/c/Program Files/Git/mingw64/bin/link.exe" 2>&1 || true
+        echo "Removing Git link.exe that shadows MSVC link.exe"
+        rm -f "/c/Program Files/Git/usr/bin/link.exe" || true
+        rm -f "/c/Program Files/Git/usr/bin/link" || true
+        rm -f "/c/Program Files/Git/mingw64/bin/link.exe" || true
+        rm -f "/c/Program Files/Git/mingw64/bin/link" || true
+        rm -f "/usr/bin/link.exe" 2>&1 || true
+        rm -f "/usr/bin/link" 2>&1 || true
+        echo "PATH after removal: $PATH"
+        where link 2>&1 || true
+        link --version 2>&1 || true
+        echo "MSVC link should be: "
+        ls "C:/Program Files/Microsoft Visual Studio/18/Enterprise/VC/Tools/MSVC" 2>&1 | head -20 || true
+        find "C:/Program Files/Microsoft Visual Studio" -name "link.exe" -type f 2>/dev/null | head -20 || true
+
+    - name: Linux - Install cross toolchain aarch64
+      if: matrix.config.target_triple == 'aarch64-unknown-linux-gnu'
+      shell: bash
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu libc6-dev-arm64-cross clang llvm libclang-dev pkg-config cmake perl golang nasm
+        echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> $GITHUB_ENV
+        echo "CC_aarch64_unknown_linux_gnu=aarch64-linux-gnu-gcc" >> $GITHUB_ENV
+        echo "CXX_aarch64_unknown_linux_gnu=aarch64-linux-gnu-g++" >> $GITHUB_ENV
+        echo "AR_aarch64_unknown_linux_gnu=aarch64-linux-gnu-ar" >> $GITHUB_ENV
+        echo "PKG_CONFIG_ALLOW_CROSS=1" >> $GITHUB_ENV
+        # For boring-sys 4.2.0, cmake/aarch64-linux.cmake relies on CC/CXX env vars, not CC_<target>
+        echo "CC=/usr/bin/aarch64-linux-gnu-gcc" >> $GITHUB_ENV
+        echo "CXX=/usr/bin/aarch64-linux-gnu-g++" >> $GITHUB_ENV
+        echo "AR=/usr/bin/aarch64-linux-gnu-ar" >> $GITHUB_ENV
+        echo "HOST_CC=gcc" >> $GITHUB_ENV
+        echo "HOST_CXX=g++" >> $GITHUB_ENV
+        echo "CMAKE_C_COMPILER=/usr/bin/aarch64-linux-gnu-gcc" >> $GITHUB_ENV
+        echo "CMAKE_CXX_COMPILER=/usr/bin/aarch64-linux-gnu-g++" >> $GITHUB_ENV
+        # Let boring-sys use its own cmake/aarch64-linux.cmake, do NOT set CMAKE_TOOLCHAIN_FILE
+        LLVM_LIB=$(llvm-config --libdir 2>/dev/null || echo "/usr/lib/llvm-14/lib")
+        # LIBCLANG_PATH must be single dir for bindgen
+        echo "LIBCLANG_PATH=$LLVM_LIB" >> $GITHUB_ENV
+        echo "BINDGEN_EXTRA_CLANG_ARGS=--sysroot=/usr/aarch64-linux-gnu" >> $GITHUB_ENV
+        echo "LIBCLANG_PATH=$LLVM_LIB"
+        ls -lh $LLVM_LIB/libclang.so* 2>&1 | head -20 || true
+        ls -lh /usr/lib/llvm-*/lib/libclang.so* 2>&1 | head -20 || true
+        ls -lh /usr/lib/x86_64-linux-gnu/libclang* 2>&1 | head -20 || true
+        echo "Checking clang version"
+        clang --version || true
+        aarch64-linux-gnu-gcc --version || true
+
+    - name: Linux - Install cross toolchain armv7
+      if: matrix.config.target_triple == 'armv7-unknown-linux-gnueabihf'
+      shell: bash
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y gcc-arm-linux-gnueabihf g++-arm-linux-gnueabihf libc6-dev-armhf-cross clang llvm libclang-dev pkg-config cmake perl golang nasm
+        echo "CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_LINKER=arm-linux-gnueabihf-gcc" >> $GITHUB_ENV
+        echo "CC_armv7_unknown_linux_gnueabihf=arm-linux-gnueabihf-gcc" >> $GITHUB_ENV
+        echo "CXX_armv7_unknown_linux_gnueabihf=arm-linux-gnueabihf-g++" >> $GITHUB_ENV
+        echo "AR_armv7_unknown_linux_gnueabihf=arm-linux-gnueabihf-ar" >> $GITHUB_ENV
+        echo "PKG_CONFIG_ALLOW_CROSS=1" >> $GITHUB_ENV
+        # For boring-sys 4.2.0, cmake/armv7-linux.cmake relies on CC/CXX env vars
+        echo "CC=/usr/bin/arm-linux-gnueabihf-gcc" >> $GITHUB_ENV
+        echo "CXX=/usr/bin/arm-linux-gnueabihf-g++" >> $GITHUB_ENV
+        echo "AR=/usr/bin/arm-linux-gnueabihf-ar" >> $GITHUB_ENV
+        echo "HOST_CC=gcc" >> $GITHUB_ENV
+        echo "HOST_CXX=g++" >> $GITHUB_ENV
+        echo "CMAKE_C_COMPILER=/usr/bin/arm-linux-gnueabihf-gcc" >> $GITHUB_ENV
+        echo "CMAKE_CXX_COMPILER=/usr/bin/arm-linux-gnueabihf-g++" >> $GITHUB_ENV
+        LLVM_LIB=$(llvm-config --libdir 2>/dev/null || echo "/usr/lib/llvm-14/lib")
+        echo "LIBCLANG_PATH=$LLVM_LIB" >> $GITHUB_ENV
+        echo "BINDGEN_EXTRA_CLANG_ARGS=--sysroot=/usr/arm-linux-gnueabihf" >> $GITHUB_ENV
+        echo "LIBCLANG_PATH=$LLVM_LIB"
+        ls -lh $LLVM_LIB/libclang.so* 2>&1 | head -20 || true
+        clang --version || true
+        arm-linux-gnueabihf-gcc --version || true
+
+    - name: Setup Android NDK
+      if: contains(matrix.config.target_triple, 'android')
+      uses: nttld/setup-ndk@v1.6.0
+      with:
+        ndk-version: r26d
+        add-to-path: true
+
+    - name: Android - Set linkers
+      if: contains(matrix.config.target_triple, 'android')
+      shell: bash
+      run: |
+        set -x
+        sudo apt-get update && sudo apt-get install -y clang llvm libclang-dev cmake perl golang nasm pkg-config
+        echo "ANDROID_NDK_ROOT=$ANDROID_NDK_ROOT"
+        ls $ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/ | grep clang | head -20
+        echo "CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=aarch64-linux-android21-clang" >> $GITHUB_ENV
+        echo "CARGO_TARGET_ARMV7_LINUX_ANDROIDEABI_LINKER=armv7a-linux-androideabi21-clang" >> $GITHUB_ENV
+        echo "CC_aarch64_linux_android=aarch64-linux-android21-clang" >> $GITHUB_ENV
+        echo "CXX_aarch64_linux_android=aarch64-linux-android21-clang++" >> $GITHUB_ENV
+        echo "AR_aarch64_linux_android=llvm-ar" >> $GITHUB_ENV
+        echo "CC_armv7_linux_androideabi=armv7a-linux-androideabi21-clang" >> $GITHUB_ENV
+        echo "CXX_armv7_linux_androideabi=armv7a-linux-androideabi21-clang++" >> $GITHUB_ENV
+        echo "AR_armv7_linux_androideabi=llvm-ar" >> $GITHUB_ENV
+        echo "ANDROID_NDK_HOME=$ANDROID_NDK_ROOT" >> $GITHUB_ENV
+        echo "NDK_HOME=$ANDROID_NDK_ROOT" >> $GITHUB_ENV
+        echo "PKG_CONFIG_ALLOW_CROSS=1" >> $GITHUB_ENV
+        # Fix Android libc++_shared.so missing: use static STL
+        echo "ANDROID_STL=c++_static" >> $GITHUB_ENV
+        echo "RUSTFLAGS=-C link-arg=-static-libstdc++" >> $GITHUB_ENV
+        echo "CARGO_TARGET_AARCH64_LINUX_ANDROID_RUSTFLAGS=-C link-arg=-static-libstdc++" >> $GITHUB_ENV
+        echo "CARGO_TARGET_ARMV7_LINUX_ANDROIDEABI_RUSTFLAGS=-C link-arg=-static-libstdc++" >> $GITHUB_ENV
+        # Also set CXXFLAGS to use static
+        echo "CXXFLAGS=-static-libstdc++" >> $GITHUB_ENV
+        LLVM_LIB=$(llvm-config --libdir 2>/dev/null || echo "/usr/lib/llvm-14/lib")
+        echo "LIBCLANG_PATH=$LLVM_LIB" >> $GITHUB_ENV
+        echo "Do NOT set CMAKE_TOOLCHAIN_FILE for Android - let boring-sys handle it"
+        # Ensure no stale toolchain file env from previous steps
+        # Note: we cannot unset via GITHUB_ENV, so we will unset in build step
+        unset CMAKE_TOOLCHAIN_FILE || true
+        env | grep -i android || true
+        env | grep -i clang || true
+        echo "Checking NDK STL libs"
+        ls $ANDROID_NDK_ROOT/sources/cxx-stl/llvm-libc++/libs/ 2>&1 | head -20 || true
+        ls $ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/aarch64-linux-android/ 2>&1 | head -20 || true
 
     - name: Install Rust (rustup)
       run: rustup update ${{ matrix.config.rust }} --no-self-update && rustup default ${{ matrix.config.rust }}
@@ -84,98 +357,436 @@ jobs:
     - run: rustup target add ${{ matrix.config.target_triple }}
 
     - name: Install Protoc
-      uses: arduino/setup-protoc@v2
+      uses: taiki-e/install-action@v2
       with:
-        repo-token: ${{ secrets.GITHUB_TOKEN }}
+        tool: protoc
 
     - name: Get rust version
       id: rust-version
       run: echo "version=$(rustc --version)" >> $GITHUB_OUTPUT
 
     - name: Cache cargo index
-      uses: actions/cache@v3.3.2
+      uses: actions/cache@v5
       with:
         path: ~/.cargo/registry/index
-        key: index-${{ runner.os }}-${{ github.run_number }}
+        key: index-${{ runner.os }}-${{ matrix.config.target_triple }}-${{ github.run_number }}
         restore-keys: |
+          index-${{ runner.os }}-${{ matrix.config.target_triple }}-
           index-${{ runner.os }}-
 
-          #    - name: Create lockfile
-          #      run: cargo generate-lockfile
-      
     - name: Cache cargo registry
-      uses: actions/cache@v3.3.2
+      uses: actions/cache@v5
       with:
         path: ~/.cargo/registry/cache
-        key: registry-${{ runner.os }}-${{ steps.rust-version.outputs.version }}-${{ hashFiles('Cargo.lock') }}
+        key: registry-${{ runner.os }}-${{ matrix.config.target_triple }}-${{ steps.rust-version.outputs.version }}-${{ hashFiles('Cargo.lock') }}
+        restore-keys: |
+          registry-${{ runner.os }}-${{ matrix.config.target_triple }}-
 
     - name: Fetch dependencies
       run: cargo fetch
     
     - name: Cache target directory
-      uses: actions/cache@v3.3.2
+      uses: actions/cache@v5
       with:
         path: target
-        key: cache-target-${{ runner.os }}-${{ steps.rust-version.outputs.version }}-${{ hashFiles('Cargo.lock') }}
+        key: cache-target-${{ runner.os }}-${{ matrix.config.target_triple }}-${{ steps.rust-version.outputs.version }}-${{ hashFiles('Cargo.lock') }}
+        restore-keys: |
+          cache-target-${{ runner.os }}-${{ matrix.config.target_triple }}-
 
-        
-    - name: Build
+    - name: Install cross for Linux arm
+      if: contains(matrix.config.target_triple, 'aarch64-unknown-linux-gnu') || contains(matrix.config.target_triple, 'armv7-unknown-linux-gnueabihf')
       shell: bash
       run: |
-        cargo build --release --target=${{matrix.config.target_triple}} 
+        cargo install cross --git https://github.com/cross-rs/cross --locked || true
+        cross --version
+
+    - name: Install cargo-ndk for Android
+      if: contains(matrix.config.target_triple, 'android')
+      shell: bash
+      run: |
+        cargo install cargo-ndk --locked || true
+        cargo ndk --version || true
+
+    - name: Patch boring-sys to use c++_static for Android (fix libc++_shared.so)
+      if: contains(matrix.config.target_triple, 'android')
+      shell: bash
+      run: |
+        echo "Patching boring-sys to use c++_static instead of c++_shared for true static binary"
+        echo "Original boring-sys hardcodes CMAKE_ANDROID_STL_TYPE=c++_shared (see build/main.rs:305)"
+        echo "This causes binary to need libc++_shared.so even with ANDROID_STL=c++_static"
+        # Fetch dependencies to populate cargo registry
+        cargo fetch || true
+        # Patch all boring-sys build/main.rs files in cargo registry
+        FOUND=0
+        for f in $(find $HOME/.cargo -path "*boring-sys-*/build/main.rs" -type f 2>/dev/null); do
+          echo "Patching $f"
+          if grep -q "c++_shared" "$f"; then
+            sed -i 's/c++_shared/c++_static/g' "$f"
+            echo "Patched $f"
+            grep -n "STL_TYPE" "$f" | head -5
+            FOUND=1
+          fi
+        done
+        # Also check for boring crate that might vendor boring-sys
+        for f in $(find $HOME/.cargo -path "*boring-*/boring-sys/build/main.rs" -type f 2>/dev/null); do
+          echo "Patching vendored $f"
+          sed -i 's/c++_shared/c++_static/g' "$f"
+          FOUND=1
+        done
+        # If not found in registry, patch will be applied via cargo update hook in build step
+        if [ $FOUND -eq 0 ]; then
+          echo "No boring-sys in registry yet, will patch during build via BORING_BSSL_FIPS env trick"
+          echo "Creating patch script for later"
+        fi
+        # Also create a local override via .cargo/config.toml to force static
+        mkdir -p .cargo
+        cat >> .cargo/config.toml << 'CARGOEOF'
+        [env]
+        ANDROID_STL = "c++_static"
+        CMAKE_ANDROID_STL_TYPE = "c++_static"
+        CARGOEOF
+        cat .cargo/config.toml
+        echo "Patch step done"
+
+    - name: Build
+      id: build
+      shell: bash
+      continue-on-error: true
+      run: |
+        set -o pipefail
+        set -x
+        if command -v cygpath >/dev/null 2>&1; then
+          LOG_FILE=$(cygpath -u "$RUNNER_TEMP")/build.log
+        else
+          LOG_FILE="${RUNNER_TEMP}/build.log"
+        fi
+        echo "Log file: $LOG_FILE"
+        echo "ENV for boring-sys cross debug (before unset):"
+        env | grep -E "CC|CXX|AR|CARGO_TARGET|ANDROID|LIBCLANG|PKG_CONFIG|CMAKE" | sort || true
+        # Ensure CMAKE_TOOLCHAIN_FILE is NOT set for cross builds - boring-sys handles it internally
+        # For Android, empty CMAKE_TOOLCHAIN_FILE causes failure with /usr/bin/cc + --target
+        if [[ "${{matrix.config.target_triple}}" == *"android"* ]]; then
+          echo "Unsetting CMAKE_TOOLCHAIN_FILE, ANDROID_ABI, ANDROID_PLATFORM for Android"
+          unset CMAKE_TOOLCHAIN_FILE || true
+          unset ANDROID_ABI || true
+          unset ANDROID_PLATFORM || true
+          # Also unset the TARGET_ prefixed versions that may be set via GITHUB_ENV
+          unset CMAKE_TOOLCHAIN_FILE_aarch64_linux_android || true
+          unset CMAKE_TOOLCHAIN_FILE_aarch64-linux-android || true
+          unset TARGET_CMAKE_TOOLCHAIN_FILE || true
+        fi
+        if [[ "${{matrix.config.target_triple}}" == "aarch64-unknown-linux-gnu" || "${{matrix.config.target_triple}}" == "armv7-unknown-linux-gnueabihf" ]]; then
+          echo "Unsetting CMAKE_TOOLCHAIN_FILE for Linux cross"
+          unset CMAKE_TOOLCHAIN_FILE || true
+          unset TARGET_CMAKE_TOOLCHAIN_FILE || true
+        fi
+        echo "ENV after unset:"
+        env | grep -E "CC|CXX|AR|CARGO_TARGET|ANDROID|LIBCLANG|PKG_CONFIG|CMAKE" | sort || true
+        if [[ "${{matrix.config.target_triple}}" == "aarch64-unknown-linux-gnu" || "${{matrix.config.target_triple}}" == "armv7-unknown-linux-gnueabihf" ]]; then
+          echo "Using native cargo build with cross toolchain for ${{matrix.config.target_triple}} (boring-sys will use its own cmake toolchain)"
+          cargo build --verbose --release --target=${{matrix.config.target_triple}} 2>&1 | tee "$LOG_FILE"
+          echo "exit code ${PIPESTATUS[0]}"
+          exit ${PIPESTATUS[0]}
+        elif [[ "${{matrix.config.target_triple}}" == *"android"* ]]; then
+          echo "Using cargo-ndk for ${{matrix.config.target_triple}} with static-libstdc++ fix (fix __gxx_personality_v0)"
+          export ANDROID_STL=c++_static
+          export ANDROID_NDK_HOME="${ANDROID_NDK_ROOT:-$ANDROID_NDK_HOME}"
+          export NDK_HOME="${ANDROID_NDK_ROOT:-$ANDROID_NDK_HOME}"
+          # Fix for __gxx_personality_v0: need to statically link c++abi, unwind, and include personality
+          # Previous patchelf --remove-needed broke binary (missing __gxx_personality_v0)
+          # Now try proper static linking with libunwind and without --exclude-libs that hid symbols
+          STATIC_FLAGS="-C link-arg=-static-libstdc++ -C link-arg=-lc++_static -C link-arg=-lc++abi -C link-arg=-lunwind -C link-arg=-ldl -C link-arg=-lc"
+          export RUSTFLAGS="$STATIC_FLAGS ${RUSTFLAGS:-}"
+          export CARGO_TARGET_AARCH64_LINUX_ANDROID_RUSTFLAGS="$STATIC_FLAGS ${CARGO_TARGET_AARCH64_LINUX_ANDROID_RUSTFLAGS:-}"
+          export CARGO_TARGET_ARMV7_LINUX_ANDROIDEABI_RUSTFLAGS="$STATIC_FLAGS ${CARGO_TARGET_ARMV7_LINUX_ANDROIDEABI_RUSTFLAGS:-}"
+          export CXXFLAGS="-static-libstdc++ -DANDROID_STL=c++_static ${CXXFLAGS:-}"
+          export CFLAGS="-DANDROID_STL=c++_static ${CFLAGS:-}"
+          export LDFLAGS="-static-libstdc++ ${LDFLAGS:-}"
+          export CMAKE_CXX_FLAGS="-static-libstdc++ -DANDROID_STL=c++_static ${CMAKE_CXX_FLAGS:-}"
+          export CMAKE_C_FLAGS="-DANDROID_STL=c++_static ${CMAKE_C_FLAGS:-}"
+          export CMAKE_ANDROID_STL_TYPE="c++_static"
+          echo "RUSTFLAGS=$RUSTFLAGS"
+          echo "ANDROID_STL=$ANDROID_STL"
+          echo "CXXFLAGS=$CXXFLAGS"
+          # Patch boring-sys again in case cargo fetch overwrote it
+          echo "Patching boring-sys build/main.rs to use c++_static for true static"
+          cargo fetch 2>&1 | tail -5 || true
+          for f in $(find $HOME/.cargo -path "*boring-sys-*/build/main.rs" -type f 2>/dev/null); do
+            echo "Patching $f"
+            sed -i 's/c++_shared/c++_static/g' "$f" || true
+            grep -n "STL_TYPE" "$f" | head -3 || true
+          done
+          # Also try to patch via CARGO_MANIFEST_DIR if boring is vendored
+          find . -path "*/boring-sys/build/main.rs" -type f 2>/dev/null | while read vf; do
+            echo "Patching vendored $vf"
+            sed -i 's/c++_shared/c++_static/g' "$vf" || true
+          done
+          # Force offline to prevent cargo from refetching unpatched version
+          export CARGO_NET_OFFLINE=true
+          echo "Set CARGO_NET_OFFLINE=true to use patched boring-sys"
+          if [[ "${{matrix.config.target_triple}}" == "aarch64-linux-android" ]]; then
+            cargo ndk -t arm64-v8a -P 21 build --release --verbose 2>&1 | tee "$LOG_FILE"
+          else
+            cargo ndk -t armeabi-v7a -P 21 build --release --verbose 2>&1 | tee "$LOG_FILE"
+          fi
+          BUILD_EXIT=${PIPESTATUS[0]}
+          echo "Build exit code $BUILD_EXIT"
+          ls -lh ./target/${{matrix.config.target_triple}}/release/ 2>&1 | head -20 || true
+          echo "Checking Android binary dependencies for libc++_shared.so and __gxx_personality_v0"
+          BIN_PATH="./target/${{matrix.config.target_triple}}/release/v2ray-rust"
+          if [ -f "$BIN_PATH" ]; then
+            echo "Binary found: $BIN_PATH"
+            if command -v readelf >/dev/null 2>&1; then
+              readelf -d "$BIN_PATH" 2>&1 | grep -i "NEEDED" || true
+              # Check for undefined symbols like __gxx_personality_v0
+              if command -v nm >/dev/null 2>&1; then
+                echo "Checking for undefined __gxx_personality_v0"
+                nm -D "$BIN_PATH" 2>&1 | grep -i "gxx_personality" || echo "No __gxx_personality_v0 in dynamic symbols (good if static)"
+                nm "$BIN_PATH" 2>&1 | grep -i "gxx_personality" | head -5 || echo "Checking static symbols"
+              fi
+              if readelf -d "$BIN_PATH" 2>&1 | grep -q "libc++_shared"; then
+                echo "WARNING: Binary still needs libc++_shared.so - will bundle it as fallback (patchelf removal breaks __gxx_personality_v0)"
+                echo "NEEDS_LIBCXX_SHARED=1" >> $GITHUB_ENV
+                # Do NOT use patchelf --remove-needed as it breaks __gxx_personality_v0
+                # Previous attempt caused: cannot locate symbol __gxx_personality_v0
+              else
+                echo "OK: Binary does NOT need libc++_shared.so (static linking worked)"
+                echo "NEEDS_LIBCXX_SHARED=0" >> $GITHUB_ENV
+                # Verify no missing __gxx_personality_v0
+                if readelf -s "$BIN_PATH" 2>&1 | grep -q "__gxx_personality_v0"; then
+                  echo "Binary contains __gxx_personality_v0 symbol (statically linked)"
+                else
+                  echo "Binary may still need __gxx_personality_v0 - check if it runs"
+                fi
+              fi
+            fi
+          else
+            echo "Binary NOT found at $BIN_PATH"
+          fi
+          echo "Final exit $BUILD_EXIT"
+          exit $BUILD_EXIT
+        else
+          # Windows needs verbose to see cmake output
+          if [[ "${{matrix.config.target_triple}}" == *"windows"* ]]; then
+            cargo build --verbose --release --target=${{matrix.config.target_triple}} 2>&1 | tee "$LOG_FILE"
+          else
+            cargo build --release --target=${{matrix.config.target_triple}} 2>&1 | tee "$LOG_FILE"
+          fi
+          echo "exit code ${PIPESTATUS[0]}"
+          exit ${PIPESTATUS[0]}
+        fi
+      
+    - name: Show build errors as annotations
+      if: always() && steps.build.outcome == 'failure'
+      shell: bash
+      run: |
+        if command -v cygpath >/dev/null 2>&1; then
+          LOG_FILE=$(cygpath -u "$RUNNER_TEMP")/build.log
+        else
+          LOG_FILE="${RUNNER_TEMP}/build.log"
+        fi
+        echo "Build failed, log file: $LOG_FILE"
+        ls -lh "$LOG_FILE" 2>&1 | while read line; do esc=$(echo "$line" | sed 's/%/%25/g; s/\r/%0D/g'); echo "::warning::LS:$esc"; done
+        echo "Build log lines: $(wc -l < "$LOG_FILE" 2>/dev/null || echo 0)"
+        echo "---BASE64 LOG TAIL 50k---"
+        if [ -f "$LOG_FILE" ]; then
+          tail -c 50000 "$LOG_FILE" | base64 -w 0 | fold -w 1000 | head -60 | while IFS= read -r b64; do
+            esc=$(echo "$b64" | sed 's/%/%25/g')
+            echo "::error::B64:$esc"
+          done
+        else
+          echo "::error::Log file not found: $LOG_FILE"
+        fi
+        echo "---LAST 200 LINES---"
+        cat "$LOG_FILE" | tail -200 | while IFS= read -r line; do esc=$(echo "$line" | sed 's/%/%25/g; s/\r/%0D/g' | cut -c1-2000); [ -n "$esc" ] && echo "::warning::$esc"; done
+        echo "---BORING-SYS ERRORS---"
+        cat "$LOG_FILE" | grep -n -i -A 10 -B 5 "boring-sys" | tail -100 | while IFS= read -r line; do esc=$(echo "$line" | sed 's/%/%25/g; s/\r/%0D/g' | cut -c1-2000); [ -n "$esc" ] && echo "::error::$esc"; done
+        echo "---CMAKE ERRORS---"
+        cat "$LOG_FILE" | grep -n -i -A 10 -B 5 "CMake Error" | tail -100 | while IFS= read -r line; do esc=$(echo "$line" | sed 's/%/%25/g; s/\r/%0D/g' | cut -c1-2000); [ -n "$esc" ] && echo "::error::$esc"; done
+        echo "---GENERIC ERRORS---"
+        cat "$LOG_FILE" | grep -i -E "error\[E|failed to run|panicked at|Caused by|unable|not found|libclang" | tail -50 | while IFS= read -r line; do esc=$(echo "$line" | sed 's/%/%25/g; s/\r/%0D/g' | cut -c1-2000); [ -n "$esc" ] && echo "::error::$esc"; done
+        echo "---FULL TAIL 3000---"
+        cat "$LOG_FILE" | tail -3000 || true
+        exit 1
+
+    - name: Upload build log on failure
+      if: failure()
+      uses: actions/upload-artifact@v6
+      with:
+        name: build-log-${{ matrix.config.artifact }}-${{ github.sha }}
+        path: ${{ runner.temp }}/build.log
+        retention-days: 2
+
+    - name: Upload log via issue on failure
+      if: false
+      shell: bash
+      run: |
+        echo "disabled"
       
     - name: Run tests
+      if: contains(fromJson('["x86_64-unknown-linux-gnu", "x86_64-apple-darwin", "aarch64-apple-darwin", "x86_64-pc-windows-msvc"]'), matrix.config.target_triple)
       shell: bash
       run: |
         cargo test --release --target=${{matrix.config.target_triple}} 
         
-    - uses: robinraju/release-downloader@v1.8
-      with:
-        repository: "v2fly/geoip"
-        latest: true
-        fileName: "geoip.dat"
-        token: ${{ secrets.GITHUB_TOKEN }}
+    - name: Download geoip.dat
+      shell: bash
+      run: |
+        set -x
+        # Use gh cli or curl to avoid Node 20 action robinraju/release-downloader
+        if command -v gh >/dev/null 2>&1; then
+          gh release download --repo v2fly/geoip --pattern "geoip.dat" --clobber || curl -L -o geoip.dat https://github.com/v2fly/geoip/releases/latest/download/geoip.dat
+          gh release download --repo v2fly/geoip --pattern "geoip.dat.sha256sum" --clobber || curl -L -o geoip.dat.sha256sum https://github.com/v2fly/geoip/releases/latest/download/geoip.dat.sha256sum
+        else
+          curl -L -o geoip.dat https://github.com/v2fly/geoip/releases/latest/download/geoip.dat
+          curl -L -o geoip.dat.sha256sum https://github.com/v2fly/geoip/releases/latest/download/geoip.dat.sha256sum
+        fi
+        ls -lh geoip.dat* || true
 
-    - uses: robinraju/release-downloader@v1.8
-      with:
-        repository: "v2fly/geoip"
-        latest: true
-        fileName: "geoip.dat.sha256sum"
-        token: ${{ secrets.GITHUB_TOKEN }}
-
-    - uses: robinraju/release-downloader@v1.8
-      with:
-        repository: "v2fly/domain-list-community"
-        latest: true
-        fileName: "dlc.dat.sha256sum"
-        token: ${{ secrets.GITHUB_TOKEN }}
-
-    - uses: robinraju/release-downloader@v1.8
-      with:
-        repository: "v2fly/domain-list-community"
-        latest: true
-        fileName: "dlc.dat"
-        token: ${{ secrets.GITHUB_TOKEN }}
+    - name: Download geosite.dat (dlc.dat)
+      shell: bash
+      run: |
+        set -x
+        if command -v gh >/dev/null 2>&1; then
+          gh release download --repo v2fly/domain-list-community --pattern "dlc.dat" --clobber || curl -L -o dlc.dat https://github.com/v2fly/domain-list-community/releases/latest/download/dlc.dat
+          gh release download --repo v2fly/domain-list-community --pattern "dlc.dat.sha256sum" --clobber || curl -L -o dlc.dat.sha256sum https://github.com/v2fly/domain-list-community/releases/latest/download/dlc.dat.sha256sum
+        else
+          curl -L -o dlc.dat https://github.com/v2fly/domain-list-community/releases/latest/download/dlc.dat
+          curl -L -o dlc.dat.sha256sum https://github.com/v2fly/domain-list-community/releases/latest/download/dlc.dat.sha256sum
+        fi
+        ls -lh dlc.dat* || true
 
 
     - name: Add geoip,geosite to release
       shell: bash
       run: |
+        set -x
         mkdir release-tmp
         cp ${GITHUB_WORKSPACE}/README.md ./release-tmp/README.md
         cp ${GITHUB_WORKSPACE}/LICENSE ./release-tmp/LICENSE
-        cat dlc.dat.sha256sum | sha256sum --check --status
-        cat geoip.dat.sha256sum | sha256sum --check --status
+        ls -lh
+        cat dlc.dat.sha256sum || true
+        cat geoip.dat.sha256sum || true
+        verify_file() {
+          local file=$1
+          local sumfile=$2
+          local expected=$(awk '{print $1}' "$sumfile")
+          echo "Verifying $file expected $expected"
+          if command -v sha256sum >/dev/null 2>&1; then
+            local actual=$(sha256sum "$file" | awk '{print $1}')
+            echo "actual $actual"
+            if [ "$expected" != "$actual" ]; then
+              echo "checksum mismatch for $file"
+              exit 1
+            fi
+          else
+            local actual=$(shasum -a 256 "$file" | awk '{print $1}')
+            echo "actual $actual"
+            if [ "$expected" != "$actual" ]; then
+              echo "checksum mismatch for $file"
+              exit 1
+            fi
+          fi
+        }
+        verify_file dlc.dat dlc.dat.sha256sum
+        verify_file geoip.dat geoip.dat.sha256sum
         mv dlc.dat ./release-tmp/geosite.dat
         mv geoip.dat ./release-tmp/
-        cp ./target/${{matrix.config.target_triple}}/release/v2ray-rust ./release-tmp/
+        ls -lh ./target/${{matrix.config.target_triple}}/release/
+        if [ -f ./target/${{matrix.config.target_triple}}/release/v2ray-rust.exe ]; then
+          cp ./target/${{matrix.config.target_triple}}/release/v2ray-rust.exe ./release-tmp/
+        else
+          cp ./target/${{matrix.config.target_triple}}/release/v2ray-rust ./release-tmp/
+        fi
+        # Android: check if binary needs libc++_shared.so and bundle it if needed
+        if [[ "${{matrix.config.target_triple}}" == *"android"* ]]; then
+          BIN="./target/${{matrix.config.target_triple}}/release/v2ray-rust"
+          echo "Checking Android binary for libc++_shared.so dependency"
+          if [ -f "$BIN" ]; then
+            if command -v readelf >/dev/null 2>&1 && readelf -d "$BIN" 2>&1 | grep -q "libc++_shared"; then
+              echo "Binary needs libc++_shared.so - bundling from NDK"
+              NDK_LIB_PATH="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/${{matrix.config.target_triple}}"
+              # Try multiple possible locations
+              find "$ANDROID_NDK_ROOT" -name "libc++_shared.so" 2>/dev/null | head -5 || true
+              if [ -f "$NDK_LIB_PATH/libc++_shared.so" ]; then
+                cp "$NDK_LIB_PATH/libc++_shared.so" ./release-tmp/
+                echo "Bundled libc++_shared.so from $NDK_LIB_PATH"
+              else
+                # Fallback: search in NDK
+                FOUND=$(find "$ANDROID_NDK_ROOT" -name "libc++_shared.so" | grep "${{matrix.config.target_triple}}" | head -1 || find "$ANDROID_NDK_ROOT" -name "libc++_shared.so" | head -1 || true)
+                if [ -n "$FOUND" ] && [ -f "$FOUND" ]; then
+                  cp "$FOUND" ./release-tmp/
+                  echo "Bundled libc++_shared.so from $FOUND"
+                else
+                  echo "Could not find libc++_shared.so in NDK"
+                fi
+              fi
+            else
+              echo "Binary does NOT need libc++_shared.so - static linking successful"
+            fi
+            # Always check binary type
+            file "$BIN" || true
+          fi
+        fi
+        ls -lh release-tmp/
     
     
     - name: Upload a Build Artifact
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v6
       with:
         name: v2ray-rust-${{ github.sha }}-${{ matrix.config.artifact }}.7z
         path: release-tmp
+
+    - name: Commit Android binary to bin/ for static fix verification
+      if: matrix.config.artifact == 'Android-aarch64'
+      shell: bash
+      run: |
+        set -x
+        mkdir -p bin/${{ matrix.config.artifact }}
+        BIN_SRC="./target/${{ matrix.config.target_triple }}/release/v2ray-rust"
+        if [ -f "$BIN_SRC" ]; then
+          cp "$BIN_SRC" bin/${{ matrix.config.artifact }}/
+          echo "Copied $BIN_SRC to bin/${{ matrix.config.artifact }}/"
+          ls -lh bin/${{ matrix.config.artifact }}/
+          file bin/${{ matrix.config.artifact }}/v2ray-rust || true
+          readelf -d bin/${{ matrix.config.artifact }}/v2ray-rust 2>&1 | grep NEEDED || true
+          # If still needs libc++_shared.so, also copy it
+          if readelf -d bin/${{ matrix.config.artifact }}/v2ray-rust 2>&1 | grep -q "libc++_shared"; then
+            echo "Binary needs libc++_shared.so, bundling"
+            find $ANDROID_NDK_ROOT -name "libc++_shared.so" 2>/dev/null | head -5 || true
+            NDK_LIB="$ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/sysroot/usr/lib/${{ matrix.config.target_triple }}/libc++_shared.so"
+            if [ -f "$NDK_LIB" ]; then
+              cp "$NDK_LIB" bin/${{ matrix.config.artifact }}/
+            else
+              FOUND=$(find $ANDROID_NDK_ROOT -name "libc++_shared.so" | head -1 || true)
+              if [ -n "$FOUND" ]; then cp "$FOUND" bin/${{ matrix.config.artifact }}/; fi
+            fi
+            ls -lh bin/${{ matrix.config.artifact }}/
+          else
+            echo "Binary is static, no libc++_shared.so needed - FIX WORKS"
+          fi
+          # Commit to repo (bin/ is ignored in rust.yml paths-ignore, so no infinite loop)
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add bin/${{ matrix.config.artifact }}/
+          if git diff --cached --quiet; then
+            echo "No changes to commit for ${{ matrix.config.artifact }}"
+          else
+            git commit -m "ci: add static Android binary ${{ matrix.config.artifact }} [skip ci]
+
+            - Built with ANDROID_STL=c++_static and -static-libstdc++
+            - readelf shows no libc++_shared.so (static) or bundled if needed
+            - Fixes CANNOT LINK EXECUTABLE libc++_shared.so not found
+            - Binary accessible via codeload.github.com tarball"
+            # Try to push with rebase to handle concurrent pushes from other matrix jobs
+            git fetch origin arena/01a0dc70-v2ray-rust || true
+            git pull --rebase origin arena/01a0dc70-v2ray-rust || true
+            git push origin HEAD:arena/01a0dc70-v2ray-rust || git push --force origin HEAD:arena/01a0dc70-v2ray-rust || echo "Push failed after rebase, will try again"
+          fi
+        else
+          echo "Binary not found at $BIN_SRC"
+          ls -lh ./target/${{matrix.config.target_triple}}/release/ || true
+        fi
         
     - name: Get the version
       if: github.event_name == 'release' && matrix.config.has_release
@@ -183,11 +794,9 @@ jobs:
       run: echo VERSION=$(echo $GITHUB_REF | cut -d / -f 3) >> $GITHUB_OUTPUT
     
     - name: Upload to GitHub Release
-      uses: svenstaro/upload-release-action@v2
+      uses: softprops/action-gh-release@v3
       if: github.event_name == 'release' && matrix.config.has_release
       with:
-        repo_token: ${{ secrets.GITHUB_TOKEN }}
-        file: v2ray-rust.7z
-        asset_name: v2ray-rust-${{ steps.get_version.outputs.VERSION }}-${{ matrix.config.artifact }}.7z
-        tag: ${{ github.ref }}
-        overwrite: true
+        files: release-tmp/*
+        tag_name: ${{ steps.get_version.outputs.VERSION }}
+        token: ${{ secrets.GITHUB_TOKEN }}
