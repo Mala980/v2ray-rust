@@ -488,14 +488,14 @@ jobs:
           echo "exit code ${PIPESTATUS[0]}"
           exit ${PIPESTATUS[0]}
         elif [[ "${{matrix.config.target_triple}}" == *"android"* ]]; then
-          echo "Using cargo-ndk for ${{matrix.config.target_triple}} with static-libstdc++ fix (fix __gxx_personality_v0 via libgcc)"
+          echo "Using cargo-ndk for ${{matrix.config.target_triple}} with static-libstdc++ fix (fix __gxx_personality_v0)"
           export ANDROID_STL=c++_static
           export ANDROID_NDK_HOME="${ANDROID_NDK_ROOT:-$ANDROID_NDK_HOME}"
           export NDK_HOME="${ANDROID_NDK_ROOT:-$ANDROID_NDK_HOME}"
-          # Fix for __gxx_personality_v0: need libgcc_eh, unwind, and static c++abi
-          # Previous patchelf removal broke binary, so keep shared lib but try to include personality statically
-          # Search NDK for provider of __gxx_personality_v0
-          STATIC_FLAGS="-C link-arg=-static-libstdc++ -C link-arg=-lc++_static -C link-arg=-lc++abi -C link-arg=-lunwind -C link-arg=-lgcc -C link-arg=-lgcc_eh -C link-arg=-ldl -C link-arg=-lc"
+          # Fix for __gxx_personality_v0: need to statically link c++abi, unwind
+          # Previous patchelf --remove-needed broke binary (missing __gxx_personality_v0)
+          # Now try proper static linking with libunwind without --exclude-libs that hid symbols
+          STATIC_FLAGS="-C link-arg=-static-libstdc++ -C link-arg=-lc++_static -C link-arg=-lc++abi -C link-arg=-lunwind -C link-arg=-ldl -C link-arg=-lc"
           export RUSTFLAGS="$STATIC_FLAGS ${RUSTFLAGS:-}"
           export CARGO_TARGET_AARCH64_LINUX_ANDROID_RUSTFLAGS="$STATIC_FLAGS ${CARGO_TARGET_AARCH64_LINUX_ANDROID_RUSTFLAGS:-}"
           export CARGO_TARGET_ARMV7_LINUX_ANDROIDEABI_RUSTFLAGS="$STATIC_FLAGS ${CARGO_TARGET_ARMV7_LINUX_ANDROIDEABI_RUSTFLAGS:-}"
@@ -508,11 +508,6 @@ jobs:
           echo "RUSTFLAGS=$RUSTFLAGS"
           echo "ANDROID_STL=$ANDROID_STL"
           echo "CXXFLAGS=$CXXFLAGS"
-          # Debug NDK libs for __gxx_personality_v0
-          echo "Searching NDK for __gxx_personality_v0 provider"
-          find $ANDROID_NDK_ROOT -name "*.a" 2>/dev/null | xargs grep -l "__gxx_personality_v0" 2>/dev/null | head -10 || echo "No .a with symbol found via grep"
-          find $ANDROID_NDK_ROOT -name "libc++_static.a" 2>/dev/null | head -5
-          ls $ANDROID_NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/lib/clang/*/lib/linux/ 2>&1 | head -20 || true
           # Patch boring-sys again in case cargo fetch overwrote it
           echo "Patching boring-sys build/main.rs to use c++_static for true static"
           cargo fetch 2>&1 | tail -5 || true
