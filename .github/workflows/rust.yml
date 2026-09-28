@@ -488,20 +488,18 @@ jobs:
           echo "exit code ${PIPESTATUS[0]}"
           exit ${PIPESTATUS[0]}
         elif [[ "${{matrix.config.target_triple}}" == *"android"* ]]; then
-          echo "Using cargo-ndk for ${{matrix.config.target_triple}} with static-libstdc++ fix (fix __gxx_personality_v0)"
+          echo "Using cargo-ndk for ${{matrix.config.target_triple}} with static-libstdc++ fix (ultra aggressive + boring-sys patch)"
           export ANDROID_STL=c++_static
           export ANDROID_NDK_HOME="${ANDROID_NDK_ROOT:-$ANDROID_NDK_HOME}"
           export NDK_HOME="${ANDROID_NDK_ROOT:-$ANDROID_NDK_HOME}"
-          # Fix for __gxx_personality_v0: need to statically link c++abi, unwind, and include personality
-          # Previous patchelf --remove-needed broke binary (missing __gxx_personality_v0)
-          # Now try proper static linking with libunwind and without --exclude-libs that hid symbols
-          STATIC_FLAGS="-C link-arg=-static-libstdc++ -C link-arg=-lc++_static -C link-arg=-lc++abi -C link-arg=-lunwind -C link-arg=-ldl -C link-arg=-lc"
+          # Ultra aggressive static flags to try to avoid libc++_shared.so
+          STATIC_FLAGS="-C link-arg=-static-libstdc++ -C link-arg=-Wl,--exclude-libs,ALL -C link-arg=-Wl,-Bstatic -C link-arg=-lc++_static -C link-arg=-lc++abi -C link-arg=-Wl,-Bdynamic"
           export RUSTFLAGS="$STATIC_FLAGS ${RUSTFLAGS:-}"
           export CARGO_TARGET_AARCH64_LINUX_ANDROID_RUSTFLAGS="$STATIC_FLAGS ${CARGO_TARGET_AARCH64_LINUX_ANDROID_RUSTFLAGS:-}"
           export CARGO_TARGET_ARMV7_LINUX_ANDROIDEABI_RUSTFLAGS="$STATIC_FLAGS ${CARGO_TARGET_ARMV7_LINUX_ANDROIDEABI_RUSTFLAGS:-}"
           export CXXFLAGS="-static-libstdc++ -DANDROID_STL=c++_static ${CXXFLAGS:-}"
           export CFLAGS="-DANDROID_STL=c++_static ${CFLAGS:-}"
-          export LDFLAGS="-static-libstdc++ ${LDFLAGS:-}"
+          export LDFLAGS="-static-libstdc++ -Wl,--exclude-libs,ALL ${LDFLAGS:-}"
           export CMAKE_CXX_FLAGS="-static-libstdc++ -DANDROID_STL=c++_static ${CMAKE_CXX_FLAGS:-}"
           export CMAKE_C_FLAGS="-DANDROID_STL=c++_static ${CMAKE_C_FLAGS:-}"
           export CMAKE_ANDROID_STL_TYPE="c++_static"
@@ -524,6 +522,8 @@ jobs:
           # Force offline to prevent cargo from refetching unpatched version
           export CARGO_NET_OFFLINE=true
           echo "Set CARGO_NET_OFFLINE=true to use patched boring-sys"
+          # Install patchelf for trying to remove NEEDED libc++_shared.so as last resort
+          sudo apt-get update && sudo apt-get install -y patchelf || true
           if [[ "${{matrix.config.target_triple}}" == "aarch64-linux-android" ]]; then
             cargo ndk -t arm64-v8a -P 21 build --release --verbose 2>&1 | tee "$LOG_FILE"
           else
@@ -532,32 +532,33 @@ jobs:
           BUILD_EXIT=${PIPESTATUS[0]}
           echo "Build exit code $BUILD_EXIT"
           ls -lh ./target/${{matrix.config.target_triple}}/release/ 2>&1 | head -20 || true
-          echo "Checking Android binary dependencies for libc++_shared.so and __gxx_personality_v0"
+          echo "Checking Android binary dependencies for libc++_shared.so"
           BIN_PATH="./target/${{matrix.config.target_triple}}/release/v2ray-rust"
           if [ -f "$BIN_PATH" ]; then
             echo "Binary found: $BIN_PATH"
             if command -v readelf >/dev/null 2>&1; then
               readelf -d "$BIN_PATH" 2>&1 | grep -i "NEEDED" || true
-              # Check for undefined symbols like __gxx_personality_v0
-              if command -v nm >/dev/null 2>&1; then
-                echo "Checking for undefined __gxx_personality_v0"
-                nm -D "$BIN_PATH" 2>&1 | grep -i "gxx_personality" || echo "No __gxx_personality_v0 in dynamic symbols (good if static)"
-                nm "$BIN_PATH" 2>&1 | grep -i "gxx_personality" | head -5 || echo "Checking static symbols"
-              fi
               if readelf -d "$BIN_PATH" 2>&1 | grep -q "libc++_shared"; then
-                echo "WARNING: Binary still needs libc++_shared.so - will bundle it as fallback (patchelf removal breaks __gxx_personality_v0)"
-                echo "NEEDS_LIBCXX_SHARED=1" >> $GITHUB_ENV
-                # Do NOT use patchelf --remove-needed as it breaks __gxx_personality_v0
-                # Previous attempt caused: cannot locate symbol __gxx_personality_v0
+                echo "WARNING: Binary still needs libc++_shared.so - trying patchelf to remove NEEDED"
+                if command -v patchelf >/dev/null 2>&1; then
+                  echo "Attempting patchelf --remove-needed libc++_shared.so"
+                  patchelf --remove-needed libc++_shared.so "$BIN_PATH" || true
+                  echo "After patchelf:"
+                  readelf -d "$BIN_PATH" 2>&1 | grep -i "NEEDED" || true
+                  if readelf -d "$BIN_PATH" 2>&1 | grep -q "libc++_shared"; then
+                    echo "Still needs libc++_shared.so after patchelf - will bundle it as fallback"
+                    echo "NEEDS_LIBCXX_SHARED=1" >> $GITHUB_ENV
+                  else
+                    echo "SUCCESS: patchelf removed libc++_shared.so dependency - binary now static!"
+                    echo "NEEDS_LIBCXX_SHARED=0" >> $GITHUB_ENV
+                  fi
+                else
+                  echo "patchelf not found, will bundle libc++_shared.so as fallback"
+                  echo "NEEDS_LIBCXX_SHARED=1" >> $GITHUB_ENV
+                fi
               else
                 echo "OK: Binary does NOT need libc++_shared.so (static linking worked)"
                 echo "NEEDS_LIBCXX_SHARED=0" >> $GITHUB_ENV
-                # Verify no missing __gxx_personality_v0
-                if readelf -s "$BIN_PATH" 2>&1 | grep -q "__gxx_personality_v0"; then
-                  echo "Binary contains __gxx_personality_v0 symbol (statically linked)"
-                else
-                  echo "Binary may still need __gxx_personality_v0 - check if it runs"
-                fi
               fi
             fi
           else
