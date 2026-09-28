@@ -129,7 +129,7 @@ impl TlsStreamBuilder {
                     let _ = root_store.add(cert);
                 }
             }
-            Err((_, err)) => {
+            Err(err) => {
                 log::debug!("rustls-native-certs failed: {}, continuing", err);
             }
         }

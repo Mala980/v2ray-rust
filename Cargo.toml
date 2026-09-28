@@ -22,7 +22,7 @@ async-trait = "0.1"
 base64 = "0.21.2"
 bitvec = "1"
 bloomfilter = "1.0.9"
-rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "dangerous_configuration"] }
 rustls-native-certs = "0.7"
 webpki-roots = "0.26"
 rustls-pemfile = "2.1"
