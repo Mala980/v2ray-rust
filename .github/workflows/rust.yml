@@ -488,14 +488,14 @@ jobs:
           echo "exit code ${PIPESTATUS[0]}"
           exit ${PIPESTATUS[0]}
         elif [[ "${{matrix.config.target_triple}}" == *"android"* ]]; then
-          echo "Using cargo-ndk for ${{matrix.config.target_triple}} with static-libstdc++ fix (fix __gxx_personality_v0 via libgcc_eh)"
+          echo "Using cargo-ndk for ${{matrix.config.target_triple}} with static-libstdc++ fix (working with bundled libc++_shared.so)"
           export ANDROID_STL=c++_static
           export ANDROID_NDK_HOME="${ANDROID_NDK_ROOT:-$ANDROID_NDK_HOME}"
           export NDK_HOME="${ANDROID_NDK_ROOT:-$ANDROID_NDK_HOME}"
-          # Fix for __gxx_personality_v0: need libgcc_eh, unwind, c++abi statically
-          # Previous patchelf removal broke binary, so keep shared lib but try to include personality
-          # Also debug NDK for provider of __gxx_personality_v0
-          STATIC_FLAGS="-C link-arg=-static-libstdc++ -C link-arg=-lc++_static -C link-arg=-lc++abi -C link-arg=-lunwind -C link-arg=-lgcc -C link-arg=-lgcc_eh -C link-arg=-ldl -C link-arg=-lc"
+          # Working flags: produces binary that needs libc++_shared.so but with __gxx_personality_v0 provided by shared lib
+          # Patchelf removal breaks __gxx_personality_v0, so keep shared lib bundled
+          # -lgcc -lgcc_eh breaks Android build, so use only -lunwind
+          STATIC_FLAGS="-C link-arg=-static-libstdc++ -C link-arg=-lc++_static -C link-arg=-lc++abi -C link-arg=-lunwind -C link-arg=-ldl -C link-arg=-lc"
           export RUSTFLAGS="$STATIC_FLAGS ${RUSTFLAGS:-}"
           export CARGO_TARGET_AARCH64_LINUX_ANDROID_RUSTFLAGS="$STATIC_FLAGS ${CARGO_TARGET_AARCH64_LINUX_ANDROID_RUSTFLAGS:-}"
           export CARGO_TARGET_ARMV7_LINUX_ANDROIDEABI_RUSTFLAGS="$STATIC_FLAGS ${CARGO_TARGET_ARMV7_LINUX_ANDROIDEABI_RUSTFLAGS:-}"
