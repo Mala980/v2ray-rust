@@ -1,0 +1,45 @@
+[build.env]
+passthrough = [
+    "ANDROID_NDK_ROOT",
+    "ANDROID_NDK_HOME",
+    "PKG_CONFIG_ALLOW_CROSS",
+    "LIBCLANG_PATH",
+    "BINDGEN_EXTRA_CLANG_ARGS",
+    "CC",
+    "CXX",
+    "AR",
+    "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER",
+    "CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_LINKER",
+    "CC_aarch64_unknown_linux_gnu",
+    "CXX_aarch64_unknown_linux_gnu",
+    "AR_aarch64_unknown_linux_gnu",
+    "CC_armv7_unknown_linux_gnueabihf",
+    "CXX_armv7_unknown_linux_gnueabihf",
+    "AR_armv7_unknown_linux_gnueabihf",
+    "CC_aarch64_linux_android",
+    "CXX_aarch64_linux_android",
+    "CC_armv7_linux_androideabi",
+    "CXX_armv7_linux_androideabi"
+]
+
+[target.aarch64-unknown-linux-gnu]
+pre-build = [
+    "apt-get update && apt-get install -y cmake perl golang clang llvm libclang-dev nasm pkg-config gcc-aarch64-linux-gnu libc6-dev-arm64-cross",
+    "ls -la /usr/lib/llvm-*/lib/ 2>&1 | head -20; ls -la /usr/lib/x86_64-linux-gnu/libclang* 2>&1 | head -20; echo $LIBCLANG_PATH"
+]
+
+[target.armv7-unknown-linux-gnueabihf]
+pre-build = [
+    "apt-get update && apt-get install -y cmake perl golang clang llvm libclang-dev nasm pkg-config gcc-arm-linux-gnueabihf libc6-dev-armhf-cross",
+    "ls -la /usr/lib/llvm-*/lib/ 2>&1 | head -20; ls -la /usr/lib/x86_64-linux-gnu/libclang* 2>&1 | head -20; echo $LIBCLANG_PATH"
+]
+
+[target.aarch64-linux-android]
+pre-build = [
+    "apt-get update && apt-get install -y cmake perl golang clang llvm libclang-dev nasm pkg-config",
+]
+
+[target.armv7-linux-androideabi]
+pre-build = [
+    "apt-get update && apt-get install -y cmake perl golang clang llvm libclang-dev nasm pkg-config",
+]

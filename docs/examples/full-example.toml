@@ -1,0 +1,112 @@
+# Full Example - kombinasi semua fitur, Go parity
+# Mirip test_config.toml tapi dengan penjelasan
+
+enable_api_server = true
+api_server_addr = "127.0.0.1:1999"
+relay_buffer_size = 8192
+backlog = 512
+
+# Shadowsocks
+[[ss]]
+addr = "127.0.0.1:9000"
+password = "123456"
+method = "chacha20-poly1305"
+tag = "ss0"
+
+# VMess
+[[vmess]]
+addr = "1.2.3.4:443"
+uuid = "b831381d-6324-4d53-ad4f-8cda48b30811"
+method = "aes-128-gcm"
+tag = "vmess"
+
+# VLESS
+[[vless]]
+addr = "1.2.3.4:443"
+uuid = "b831381d-6324-4d53-ad4f-8cda48b30811"
+tag = "vless"
+
+# Trojan
+[[trojan]]
+addr = "1.2.3.4:443"
+password = "password123"
+tag = "trojan"
+
+# Transports
+[[ws]]
+uri = "wss://example.com:443/ws?ed=2048"
+tag = "ws"
+
+[[tls]]
+sni = "example.com"
+tag = "tls"
+
+[[grpc]]
+host = "example.com:443"
+service_name = "GunService"
+tag = "grpc"
+
+[[h2]]
+hosts = ["example.com"]
+path = "/ray"
+tag = "h2"
+
+[[direct]]
+tag = "direct"
+
+[[blackhole]]
+tag = "block"
+
+# Outbounds - chain bebas
+[[outbounds]]
+chain = ["tls", "ws", "vmess"]
+tag = "vmess-ws-tls"
+
+[[outbounds]]
+chain = ["tls", "ws", "vless"]
+tag = "vless-ws-tls"
+
+[[outbounds]]
+chain = ["tls", "grpc", "vless"]
+tag = "vless-grpc-tls"
+
+[[outbounds]]
+chain = ["tls", "trojan"]
+tag = "trojan-tls"
+
+[[outbounds]]
+chain = ["ss0"]
+tag = "ss-direct"
+
+[[outbounds]]
+chain = ["direct"]
+tag = "direct-out"
+
+[[outbounds]]
+chain = ["block"]
+tag = "block-out"
+
+# Inbounds
+[[inbounds]]
+addr = "127.0.0.1:1080"
+enable_udp = true
+tag = "socks"
+
+[[inbounds]]
+addr = "127.0.0.1:1081"
+tag = "http"
+
+# Routing
+[[geosite_rules]]
+tag = "direct-out"
+rules = ["cn"]
+
+[[geoip_rules]]
+tag = "direct-out"
+rules = ["private", "cn"]
+
+[[geosite_rules]]
+tag = "block-out"
+rules = ["category-ads-all"]
+
+default_outbound = "vmess-ws-tls"

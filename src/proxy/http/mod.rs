@@ -40,6 +40,7 @@ impl HttpInbound {
         relay_buffer_size: usize,
     ) -> Self {
         let client = Client::builder()
+            .http1_title_case_headers(true)
             .http1_preserve_header_case(true)
             .build(Connector::new(inner_map.clone(), router.clone()));
         Self {
@@ -144,10 +145,12 @@ async fn proxy(
 ) -> Result<Response<Body>, hyper::Error> {
     remove_proxy_headers(&mut req);
     debug_log!("http proxy server req: {:?}", req);
+    // For Go compatibility, preserve original request but remove proxy headers
     let response: Result<Response<Body>, hyper::Error> = client.request(req).await;
     if response.is_err() {
+        log::debug!("http proxy error: {:?}", response.as_ref().err());
         Ok(Response::builder()
-            .status(StatusCode::INTERNAL_SERVER_ERROR)
+            .status(StatusCode::BAD_GATEWAY)
             .body(Body::empty())
             .unwrap())
     } else {
@@ -156,8 +159,25 @@ async fn proxy(
 }
 
 fn host_addr(uri: &http::Uri) -> Option<Address> {
-    uri.authority()
-        .and_then(|auth| Address::from_str(auth.as_str()).map(Some).unwrap_or(None))
+    // For Go compatibility, parse authority as address
+    // Authority may be like "example.com:443" or "[::1]:443" or "192.168.1.1:80"
+    if let Some(auth) = uri.authority() {
+        // Try to parse authority directly
+        if let Ok(addr) = Address::from_str(auth.as_str()) {
+            return Some(addr);
+        }
+        // If authority parsing fails, try to extract host and use default port 443 for CONNECT
+        // Go's CONNECT requires port, but we try to be permissive
+        let host = auth.host();
+        // For CONNECT, default to 443 if no port specified (Go would require port, but we default)
+        let port = auth.port_u16().unwrap_or(443);
+        // Try to parse host:port
+        let addr_str = format!("{}:{}", host, port);
+        if let Ok(addr) = Address::from_str(&addr_str) {
+            return Some(addr);
+        }
+    }
+    None
 }
 
 // Create a TCP connection to host:port, build a tunnel between the connection and
@@ -203,9 +223,12 @@ async fn tunnel(
 
 pub fn remove_proxy_headers(req: &mut Request<Body>) {
     // Remove headers that shouldn't be forwarded to upstream
+    // For Go compatibility, match v2ray-core's http inbound behavior
     req.headers_mut().remove(header::ACCEPT_ENCODING);
     req.headers_mut().remove(header::CONNECTION);
     req.headers_mut().remove("proxy-connection");
     req.headers_mut().remove(header::PROXY_AUTHENTICATE);
     req.headers_mut().remove(header::PROXY_AUTHORIZATION);
+    // Also remove Keep-Alive for Go compatibility
+    req.headers_mut().remove("keep-alive");
 }

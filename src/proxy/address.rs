@@ -45,27 +45,86 @@ impl FromStr for Address {
     type Err = AddressError;
 
     fn from_str(s: &str) -> Result<Address, AddressError> {
-        match s.parse::<SocketAddr>() {
-            Ok(addr) => Ok(Address::SocketAddress(addr)),
-            Err(..) => {
-                let mut sp = s.split(':');
-                match (sp.next(), sp.next()) {
-                    (Some(dn), Some(port)) => match port.parse::<u16>() {
-                        Ok(port) => Ok(Address::DomainNameAddress(dn.to_owned(), port)),
-                        Err(..) => Err(AddressError {
-                            message: s.to_owned(),
-                        }),
-                    },
-                    (Some(dn), None) => {
-                        // Assume it is 80 (http's default port)
-                        Ok(Address::DomainNameAddress(dn.to_owned(), 80))
-                    }
-                    _ => Err(AddressError {
-                        message: s.to_owned(),
-                    }),
-                }
+        // First try to parse as SocketAddr directly (handles IPv4, IPv6 with brackets, etc.)
+        if let Ok(addr) = s.parse::<SocketAddr>() {
+            return Ok(Address::SocketAddress(addr));
+        }
+        // Try to handle IPv6 literal without port in brackets? e.g. "[::1]:443" already handled above.
+        // For domain:port, use rsplitn to split on last ':' to correctly handle IPv6 without brackets? 
+        // But for Go compatibility, we support:
+        // - "example.com:443"
+        // - "example.com" (default 80 for http compatibility, but we will default to 0 and let caller decide)
+        // - IPv4 "1.2.3.4:443"
+        // - IPv6 without brackets is ambiguous, so we require brackets for IPv6 with port.
+        // We also support plain IP without port (default 0? but for compatibility we use 80 for domain)
+        let s = s.trim();
+        if s.is_empty() {
+            return Err(AddressError {
+                message: "empty address".to_owned(),
+            });
+        }
+        // Check if it's an IP without port
+        if let Ok(ip) = s.parse::<IpAddr>() {
+            // No port, default to 0 for IP? Go would require port, but for compatibility we use 0
+            // For domain without port we use 80 as before, for IP without port we use 80 as well to keep old behavior
+            return Ok(Address::SocketAddress(SocketAddr::new(ip, 0)));
+        }
+        // Handle bracketed IPv6 without port? e.g. "[::1]" -> parse as IP
+        if s.starts_with('[') && s.ends_with(']') {
+            let inner = &s[1..s.len() - 1];
+            if let Ok(ip) = inner.parse::<Ipv6Addr>() {
+                return Ok(Address::SocketAddress(SocketAddr::new(
+                    IpAddr::V6(ip),
+                    0,
+                )));
             }
         }
+        // For domain:port, split on last ':'
+        if let Some(colon_pos) = s.rfind(':') {
+            let (host_part, port_part) = s.split_at(colon_pos);
+            let port_str = &port_part[1..]; // skip ':'
+            // If host_part contains ']' (bracketed IPv6), it should have been parsed as SocketAddr above.
+            // If host_part is empty, invalid.
+            if host_part.is_empty() {
+                return Err(AddressError {
+                    message: s.to_owned(),
+                });
+            }
+            // Check if port is numeric
+            if let Ok(port) = port_str.parse::<u16>() {
+                // host_part may be bracketed IPv6 like "[::1]" - strip brackets
+                let domain = if host_part.starts_with('[') && host_part.ends_with(']') {
+                    &host_part[1..host_part.len() - 1]
+                } else {
+                    host_part
+                };
+                // If domain is IP, return SocketAddress
+                if let Ok(ip) = domain.parse::<IpAddr>() {
+                    return Ok(Address::SocketAddress(SocketAddr::new(ip, port)));
+                }
+                // Otherwise domain name
+                // Validate domain not empty and port parsing succeeded
+                return Ok(Address::DomainNameAddress(domain.to_owned(), port));
+            } else {
+                // Port not numeric, maybe the whole string is domain without port
+                // Fall through to domain without port handling
+            }
+        }
+        // No colon or colon but port not numeric -> treat as domain without port
+        // For compatibility with original code, default to 80
+        // But for Go compatibility, we should allow domain without port and default to 80 for http, 0 otherwise?
+        // We'll default to 80 as before, but also support that this is used for CONNECT which requires port,
+        // so caller will handle error if port 80 is not intended? We'll keep 80 for backward compat.
+        // To be more Go-like, we could default to 0, but that would break existing configs.
+        // We'll default to 80 for domain, and 0 for IP already handled.
+        // If string contains ':' but port invalid, return error
+        if s.contains(':') {
+            // Contains colon but failed to parse as SocketAddr and failed port parse -> invalid
+            return Err(AddressError {
+                message: s.to_owned(),
+            });
+        }
+        Ok(Address::DomainNameAddress(s.to_owned(), 80))
     }
 }
 impl Address {
@@ -99,7 +158,7 @@ impl Address {
         R: AsyncRead + Unpin,
     {
         let mut addr_type_buf = [0u8; 1];
-        let _ = stream.read_exact(&mut addr_type_buf).await?;
+        stream.read_exact(&mut addr_type_buf).await?;
 
         let addr_type = addr_type_buf[0];
         match addr_type {
@@ -195,6 +254,9 @@ impl Address {
                 }
                 let mut domain_name = vec![0u8; domain_len];
                 cur.copy_to_slice(&mut domain_name);
+                if cur.remaining() < 2 {
+                    return Err(new_error("Domain port missing"));
+                }
                 let port = cur.get_u16();
                 let domain_name = String::from_utf8(domain_name)
                     .map_err(|e| new_error(format!("invalid utf8 domain name {}", e)))?;
@@ -202,7 +264,7 @@ impl Address {
             }
             Self::ADDR_TYPE_IPV6 => {
                 if cur.remaining() < 8 * 2 + 2 {
-                    return Err(new_error("IPv4 address too short"));
+                    return Err(new_error("IPv6 address too short"));
                 }
                 let addr = Ipv6Addr::new(
                     cur.get_u16(),
@@ -287,28 +349,55 @@ impl Address {
     pub fn get_sock_addr(&self) -> SocketAddr {
         match self {
             Address::SocketAddress(e) => *e,
-            Address::DomainNameAddress(_, _) => {
-                panic!("domain can't get sock addr");
+            Address::DomainNameAddress(host, port) => {
+                // For compatibility with Go, try to resolve domain to socket addr
+                // but for direct use (like API server), we expect SocketAddress.
+                // If it's a domain, attempt to parse as IP, otherwise panic as before.
+                // To be more robust, try to lookup? But we keep panic for non-IP to match old behavior,
+                // except we try to resolve via ToSocketAddrs for Go-like behavior.
+                if let Ok(mut addrs) = (host.as_str(), *port).to_socket_addrs() {
+                    if let Some(addr) = addrs.next() {
+                        return addr;
+                    }
+                }
+                panic!("domain can't get sock addr: {}:{}", host, port);
+            }
+        }
+    }
+
+    pub fn get_sock_addr_or_resolve(&self) -> io::Result<SocketAddr> {
+        match self {
+            Address::SocketAddress(e) => Ok(*e),
+            Address::DomainNameAddress(host, port) => {
+                let addrs = (host.as_str(), *port).to_socket_addrs()?;
+                addrs.into_iter().next().ok_or_else(|| new_error("no addr resolved"))
             }
         }
     }
 
     pub async fn connect_tcp(&self) -> io::Result<TcpStream> {
-        return match self {
+        match self {
             Address::SocketAddress(addr) => TcpStream::connect(addr).await,
             Address::DomainNameAddress(host, port) => {
                 TcpStream::connect((host.as_str(), *port)).await
             }
-        };
+        }
     }
 
     pub async fn connect_udp(&self, socket: UdpSocket) -> io::Result<ConnectedUdpSocket> {
-        return match self {
+        match self {
             Address::SocketAddress(addr) => ConnectedUdpSocket::connect(socket, addr).await,
             Address::DomainNameAddress(host, port) => {
                 ConnectedUdpSocket::connect(socket, (host.as_str(), *port)).await
             }
-        };
+        }
+    }
+
+    pub fn port(&self) -> u16 {
+        match self {
+            Address::SocketAddress(sa) => sa.port(),
+            Address::DomainNameAddress(_, p) => *p,
+        }
     }
 }
 

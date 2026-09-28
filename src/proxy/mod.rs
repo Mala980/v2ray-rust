@@ -19,9 +19,13 @@ mod address;
 pub mod blackhole;
 pub mod direct;
 pub mod dokodemo_door;
+pub mod domainsocket;
 pub mod grpc;
 pub mod h2;
 pub mod http;
+pub mod http_transport;
+pub mod kcp;
+pub mod quic;
 pub mod shadowsocks;
 pub mod simpleobfs;
 pub mod socks;
@@ -29,6 +33,7 @@ pub mod tls;
 pub mod trojan;
 mod udp;
 mod utils;
+pub mod vless;
 pub mod vmess;
 pub mod websocket;
 
@@ -66,6 +71,7 @@ pub enum ProtocolType {
     SS,
     Tls,
     Vmess,
+    Vless,
     Grpc,
     WS,
     Trojan,
@@ -73,11 +79,18 @@ pub enum ProtocolType {
     H2,
     Blackhole,
     SimpleObfs,
+    DomainSocket,
+    Http,
+    Quic,
+    Kcp,
 }
 
 impl ProtocolType {
     pub fn is_uot(&self) -> bool {
-        matches!(self, ProtocolType::Vmess | ProtocolType::Trojan)
+        matches!(
+            self,
+            ProtocolType::Vmess | ProtocolType::Trojan | ProtocolType::Vless
+        )
     }
 }
 

@@ -1,8 +1,16 @@
 fn normalize6(ip: u128, prefix: u8) -> u128 {
-    ip >> (128 - prefix) << (128 - prefix)
+    if prefix == 0 {
+        0
+    } else {
+        ip >> (128 - prefix) << (128 - prefix)
+    }
 }
 fn normalize(ip: u32, prefix: u8) -> u32 {
-    ip >> (32 - prefix) << (32 - prefix)
+    if prefix == 0 {
+        0
+    } else {
+        ip >> (32 - prefix) << (32 - prefix)
+    }
 }
 
 trait TrieNode {
@@ -38,63 +46,95 @@ macro_rules! impl_trie {
                 }
             }
             pub fn put(&mut self, key: $ip_type, prefix: u8, value: u32) {
-                let bit = std::mem::size_of::<$ip_type>() * 8;
-                let mask = ((1 << (bit - prefix as usize)) - 1) ^ ($ip_type::nullptr());
-                let mut bit = 1 << (bit - 1);
-                let mut node = 0;
-                let mut next = 0;
-                while (bit & mask) != 0 {
-                    next = if key & bit != 0 {
-                        self.right[node as usize]
+                if prefix == 0 {
+                    self.value[0] = value;
+                    return;
+                }
+                let total_bits = std::mem::size_of::<$ip_type>() * 8;
+                let mut node = 0usize;
+                let mut depth = 0u8;
+
+                // Traverse existing nodes as far as possible within prefix
+                while depth < prefix {
+                    let bit = (total_bits - 1 - depth as usize) as usize;
+                    // Actually we need to check current bit of key at position bit
+                    // Use shift to get bit
+                    let key_bit = (key >> bit) & 1 as $ip_type;
+                    let next = if key_bit != 0 as $ip_type {
+                        self.right[node]
                     } else {
-                        self.left[node as usize]
+                        self.left[node]
                     };
                     if next == $ip_type::nullptr() {
                         break;
                     }
-                    bit >>= 1;
-                    node = next;
+                    node = next as usize;
+                    depth += 1;
                 }
-                if next != $ip_type::nullptr() {
-                    self.value[node as usize] = value;
+
+                if depth == prefix {
+                    // Found existing node for this prefix
+                    self.value[node] = value;
                     return;
                 }
-                while (bit & mask) != 0 {
-                    next = self.size as $ip_type;
-                    //println!("next:{},len:{}", next, self.value.len());
+
+                // Create remaining nodes
+                while depth < prefix {
+                    let bit = (total_bits - 1 - depth as usize) as usize;
+                    let key_bit = (key >> bit) & 1 as $ip_type;
+                    let next_idx = self.size as $ip_type;
                     self.value.push(u32::MAX);
                     self.left.push($ip_type::nullptr());
                     self.right.push($ip_type::nullptr());
-                    if (key & bit) != 0 {
-                        self.right[node as usize] = next;
+                    if key_bit != 0 as $ip_type {
+                        self.right[node] = next_idx;
                     } else {
-                        self.left[node as usize] = next;
+                        self.left[node] = next_idx;
                     }
-
-                    bit >>= 1;
-                    node = next;
+                    node = next_idx as usize;
                     self.size += 1;
+                    depth += 1;
                 }
-                self.value[node as usize] = value;
+                self.value[node] = value;
             }
 
             pub fn get(&self, key: $ip_type) -> Option<u32> {
-                let bit = std::mem::size_of::<u32>() * 8;
-                let mut bit = (1 as $ip_type) << (bit - 1);
+                let total_bits = std::mem::size_of::<$ip_type>() * 8;
+                let mut bit = total_bits - 1;
                 let mut value = u32::MAX;
-                let mut node = 0;
-                while node != $ip_type::nullptr() {
-                    if self.value[node as usize] != u32::MAX {
-                        value = self.value[node as usize];
+                let mut node = 0usize;
+                loop {
+                    if self.value[node] != u32::MAX {
+                        value = self.value[node];
                     }
-                    node = if key & bit != 0 {
-                        self.right[node as usize]
+                    if bit >= total_bits {
+                        break;
+                    }
+                    // Check if node has children, if both nullptr we can still have value
+                    let key_bit = (key >> bit) & 1 as $ip_type;
+                    let next = if key_bit != 0 as $ip_type {
+                        self.right[node]
                     } else {
-                        self.left[node as usize]
+                        self.left[node]
                     };
-                    bit >>= 1;
+                    if next == $ip_type::nullptr() {
+                        break;
+                    }
+                    node = next as usize;
+                    if bit == 0 {
+                        // Last bit, check value at child then break
+                        if self.value[node] != u32::MAX {
+                            value = self.value[node];
+                        }
+                        break;
+                    }
+                    bit -= 1;
                 }
-                return if value == u32::MAX { None } else { Some(value) };
+                if value == u32::MAX {
+                    None
+                } else {
+                    Some(value)
+                }
             }
         }
     };
@@ -183,5 +223,38 @@ mod tests {
         assert_eq!(trie.get(ip4).unwrap(), 42);
         let ip5 = u32::from_be_bytes([10, 0, 3, 5]);
         assert_eq!(trie.get(ip5).unwrap(), 123);
+    }
+
+    #[test]
+    fn test_longest_prefix() {
+        let mut trie = PatriciaTrie4::new();
+        // 0.0.0.0/0 -> 1
+        trie.put(0, 0, 1);
+        // 10.0.0.0/8 -> 2
+        let ip10 = u32::from_be_bytes([10, 0, 0, 0]);
+        trie.put(ip10, 8, 2);
+        // 10.0.0.0/24 -> 3
+        trie.put(ip10, 24, 3);
+        // 192.168.0.0/16 -> 4
+        let ip192 = u32::from_be_bytes([192, 168, 0, 0]);
+        trie.put(ip192, 16, 4);
+
+        assert_eq!(trie.get(u32::from_be_bytes([10, 0, 0, 5])).unwrap(), 3);
+        assert_eq!(trie.get(u32::from_be_bytes([10, 1, 2, 3])).unwrap(), 2);
+        assert_eq!(trie.get(u32::from_be_bytes([192, 168, 1, 1])).unwrap(), 4);
+        assert_eq!(trie.get(u32::from_be_bytes([8, 8, 8, 8])).unwrap(), 1);
+    }
+
+    #[test]
+    fn test_ipv6() {
+        use super::PatriciaTrie6;
+        let mut trie = PatriciaTrie6::new();
+        // ::/0 -> 1
+        trie.put(0, 0, 1);
+        // 2001:db8::/32 -> 2
+        let ip = 0x20010db8000000000000000000000000u128;
+        trie.put(ip, 32, 2);
+        assert_eq!(trie.get(0x20010db8000000000000000000000001u128).unwrap(), 2);
+        assert_eq!(trie.get(0x20010db9000000000000000000000001u128).unwrap(), 1);
     }
 }

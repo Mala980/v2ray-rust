@@ -51,11 +51,11 @@ where
     let security: &str = Deserialize::deserialize(deserializer)?;
     if security == "aes-128-gcm" {
         security_num = 0x03;
-    } else if security == "chacha20-poly1305" {
+    } else if security == "chacha20-poly1305" || security == "chacha20-ietf-poly1305" {
         security_num = 0x04;
     } else if security == "none" || security == "zero" {
-        let msg = format!("not support vmess security type:{}", security);
-        return Err(Error::custom(msg.as_str()));
+        // Go's v2ray-core supports none/zero as no encryption (0x05)
+        security_num = 0x05;
     } else if security == "auto" {
         #[cfg(any(target_arch = "x86_64", target_arch = "aarch64"))]
         {
@@ -91,73 +91,56 @@ impl EarlyDataUri {
     fn new(uri: &str) -> std::io::Result<EarlyDataUri> {
         let ws_uri: Uri = uri.parse().map_err(new_error)?;
         if let Some(query) = ws_uri.query() {
-            let mut tmp_key = String::new();
-            let mut tmp_value = String::new();
-            let mut read_key = true;
-            let mut found_ed = false;
-            let mut start_idx = 0;
-            let mut end_idx = query.len();
-            for (idx, c) in query.chars().enumerate() {
-                match c {
-                    '=' => {
-                        read_key = false;
+            // Parse query string into key-value pairs, extract "ed" param
+            let mut remaining_parts: Vec<String> = Vec::new();
+            let mut max_early_data: Option<usize> = None;
+
+            for part in query.split('&') {
+                if part.is_empty() {
+                    continue;
+                }
+                let mut kv = part.splitn(2, '=');
+                let key = kv.next().unwrap_or("");
+                let value = kv.next().unwrap_or("");
+                if key == "ed" && max_early_data.is_none() {
+                    // Parse ed value
+                    let ed_val: usize = value.parse().map_err(new_error)?;
+                    if ed_val == 0 {
+                        return Err(new_error("read from query max early data is zero."));
                     }
-                    '&' => {
-                        read_key = true;
-                        if tmp_key == "ed" {
-                            found_ed = true;
-                            end_idx = idx;
-                            start_idx = idx - tmp_value.len() - tmp_key.len() - 1;
-                            break;
-                        }
-                        tmp_key.clear();
-                        tmp_value.clear();
-                    }
-                    _ => {
-                        if read_key {
-                            tmp_key.push(c);
-                        } else {
-                            tmp_value.push(c);
-                        }
-                    }
+                    max_early_data = Some(ed_val);
+                    // Do not add this part to remaining_parts (remove ed from URI)
+                } else {
+                    remaining_parts.push(part.to_string());
                 }
             }
-            if tmp_key == "ed" && !found_ed {
-                found_ed = true;
-                start_idx = end_idx - tmp_value.len() - tmp_key.len() - 1; // key_len + value_len + '&'
-            }
-            if found_ed {
-                let max_early_data: usize = tmp_value.parse::<usize>().map_err(new_error)?;
-                if max_early_data == 0 {
-                    return Err(new_error("read from query max early data is zero."));
-                }
-                tmp_value.clear();
-                let mut new_query = tmp_value;
-                new_query.push_str(ws_uri.path());
-                new_query.push('?');
-                for (idx, c) in query.chars().enumerate() {
-                    if idx >= start_idx && idx < end_idx {
-                        continue;
-                    }
-                    new_query.push(c);
-                }
+
+            if let Some(ed) = max_early_data {
+                // Rebuild URI without ed param, matching Go's behavior
+                let path = ws_uri.path();
+                let new_path_and_query = if remaining_parts.is_empty() {
+                    path.to_string()
+                } else {
+                    format!("{}?{}", path, remaining_parts.join("&"))
+                };
+
                 let parts = ws_uri.into_parts();
-                let mut new_uri = Uri::builder();
+                let mut new_uri_builder = Uri::builder();
                 if let Some(s) = parts.scheme {
-                    new_uri = new_uri.scheme(s);
+                    new_uri_builder = new_uri_builder.scheme(s);
                 }
                 if let Some(a) = parts.authority {
-                    new_uri = new_uri.authority(a);
+                    new_uri_builder = new_uri_builder.authority(a);
                 }
-                let uri = new_uri
-                    .path_and_query(new_query.as_str())
+                let uri = new_uri_builder
+                    .path_and_query(new_path_and_query.as_str())
                     .build()
                     .map_err(new_error)?;
 
                 return Ok(EarlyDataUri {
                     uri,
                     early_data_header_name: "Sec-WebSocket-Protocol".to_string(),
-                    max_early_data,
+                    max_early_data: ed,
                 });
             }
         }
@@ -318,6 +301,51 @@ pub(super) fn default_random_string() -> String {
 #[inline]
 pub(super) fn default_http2_method() -> Method {
     Method::PUT
+}
+
+#[inline]
+pub(super) fn default_quic_security() -> String {
+    "none".to_string()
+}
+
+#[inline]
+pub(super) fn default_quic_header() -> String {
+    "none".to_string()
+}
+
+#[inline]
+pub(super) fn default_kcp_mtu() -> u32 {
+    1350
+}
+
+#[inline]
+pub(super) fn default_kcp_tti() -> u32 {
+    20
+}
+
+#[inline]
+pub(super) fn default_kcp_uplink() -> u32 {
+    5
+}
+
+#[inline]
+pub(super) fn default_kcp_downlink() -> u32 {
+    20
+}
+
+#[inline]
+pub(super) fn default_kcp_read_buffer() -> u32 {
+    2
+}
+
+#[inline]
+pub(super) fn default_kcp_write_buffer() -> u32 {
+    2
+}
+
+#[inline]
+pub(super) fn default_kcp_header() -> String {
+    "none".to_string()
 }
 
 fn default_v2ray_asset_path(file_name: &str) -> PathBuf {
