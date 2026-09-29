@@ -1,5 +1,8 @@
 name: Rustls-Android-Static
 
+permissions:
+  contents: write
+
 on:
   push:
     branches:
