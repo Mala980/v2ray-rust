@@ -574,7 +574,7 @@ jobs:
           exit ${PIPESTATUS[0]}
         fi
       
-    - name: Show build errors as annotations
+    - name: Show build errors as annotations and commit log for codeload
       if: always() && steps.build.outcome == 'failure'
       shell: bash
       run: |
@@ -597,6 +597,18 @@ jobs:
         fi
         echo "---LAST 200 LINES---"
         cat "$LOG_FILE" | tail -200 | while IFS= read -r line; do esc=$(echo "$line" | sed 's/%/%25/g; s/\r/%0D/g' | cut -c1-2000); [ -n "$esc" ] && echo "::warning::$esc"; done
+        mkdir -p logs
+        if [ -f "$LOG_FILE" ]; then
+          cp "$LOG_FILE" logs/build-log-${{ matrix.config.artifact }}.log || true
+          ls -lh logs/ || true
+        fi
+        if [[ "${{ matrix.config.artifact }}" == "Linux-x86_64" ]]; then
+          git config user.name "github-actions[bot]" || true
+          git config user.email "github-actions[bot]@users.noreply.github.com" || true
+          git add logs/ || true
+          git commit -m "ci: add build log for ${{ matrix.config.artifact }} [skip ci]" || true
+          git push origin HEAD:arena/01a0dc70-v2ray-rust || true
+        fi
         echo "---BORING-SYS ERRORS---"
         cat "$LOG_FILE" | grep -n -i -A 10 -B 5 "boring-sys" | tail -100 | while IFS= read -r line; do esc=$(echo "$line" | sed 's/%/%25/g; s/\r/%0D/g' | cut -c1-2000); [ -n "$esc" ] && echo "::error::$esc"; done
         echo "---CMAKE ERRORS---"
