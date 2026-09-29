@@ -1,0 +1,76 @@
+name: Rustls-Android-Static
+
+on:
+  push:
+    branches:
+      - 'arena/*'
+    paths:
+      - 'src/proxy/tls/**'
+      - 'Cargo.toml'
+      - '.github/workflows/rustls-android.yml'
+  workflow_dispatch:
+
+jobs:
+  build-rustls-android:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v6
+      - name: Setup Android NDK
+        uses: nttld/setup-ndk@v1.6.0
+        with:
+          ndk-version: r26d
+          add-to-path: true
+      - name: Android - Set linkers
+        shell: bash
+        run: |
+          sudo apt-get update && sudo apt-get install -y clang llvm libclang-dev cmake perl golang nasm pkg-config
+          echo "CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER=aarch64-linux-android21-clang" >> $GITHUB_ENV
+          echo "CC_aarch64_linux_android=aarch64-linux-android21-clang" >> $GITHUB_ENV
+          echo "CXX_aarch64_linux_android=aarch64-linux-android21-clang++" >> $GITHUB_ENV
+          echo "AR_aarch64_linux_android=llvm-ar" >> $GITHUB_ENV
+      - name: Install Rust
+        run: |
+          rustup update stable --no-self-update && rustup default stable
+          rustup target add aarch64-linux-android
+      - name: Install Protoc
+        uses: taiki-e/install-action@v2
+        with:
+          tool: protoc
+      - name: Install cargo-ndk
+        run: cargo install cargo-ndk --locked || true
+      - name: Build Android with rustls-tls (pure Rust, no C++)
+        shell: bash
+        run: |
+          set -x
+          cargo ndk -t arm64-v8a -P 21 build --release --no-default-features --features rustls-tls --verbose 2>&1 | tee /tmp/build.log
+          EXIT=${PIPESTATUS[0]}
+          echo "Build exit $EXIT"
+          ls -lh target/aarch64-linux-android/release/ | head -20
+          BIN=target/aarch64-linux-android/release/v2ray-rust
+          if [ -f "$BIN" ]; then
+            echo "Binary found"
+            file "$BIN" || true
+            readelf -d "$BIN" 2>&1 | head -30
+            echo "=== NEEDED ==="
+            readelf -d "$BIN" 2>&1 | grep NEEDED || echo "No NEEDED? static?"
+            if readelf -d "$BIN" 2>&1 | grep -q "libc++_shared"; then
+              echo "::error::Binary still needs libc++_shared.so - rustls fix failed"
+              exit 1
+            else
+              echo "SUCCESS: Binary does NOT need libc++_shared.so - truly static!"
+            fi
+            if readelf -d "$BIN" 2>&1 | grep -q "libdl\|libc.so"; then
+              echo "NEEDED libs:"
+              readelf -d "$BIN" 2>&1 | grep NEEDED
+            fi
+          else
+            echo "Binary not found"
+            exit 1
+          fi
+          exit $EXIT
+      - name: Upload binary
+        uses: actions/upload-artifact@v6
+        with:
+          name: android-rustls-static
+          path: target/aarch64-linux-android/release/v2ray-rust
