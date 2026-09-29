@@ -26,7 +26,7 @@ bitvec = "1"
 bloomfilter = "1.0.9"
 boring = { version = "5.2.0", optional = true }
 boring-sys = { version = "5.2.0", optional = true }
-rustls = { version = "0.23", optional = true, default-features = false, features = ["ring", "std", "tls12", "dangerous_configuration"] }
+rustls = { version = "0.23", optional = true, default-features = false, features = ["ring", "std", "tls12"] }
 rustls-native-certs = { version = "0.7", optional = true }
 webpki-roots = { version = "0.26", optional = true }
 rustls-pemfile = { version = "2.1", optional = true }
