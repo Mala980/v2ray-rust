@@ -299,14 +299,15 @@ mod rustls_impl {
                     log::debug!("rustls-native-certs failed: {}, continuing", err);
                 }
             }
-            let config_builder = ClientConfig::builder().with_root_certificates(root_store);
             let mut config = if !verify_hostname {
-                config_builder
+                ClientConfig::builder()
                     .dangerous()
                     .with_custom_certificate_verifier(Arc::new(NoCertificateVerification))
                     .with_no_client_auth()
             } else {
-                config_builder.with_no_client_auth()
+                ClientConfig::builder()
+                    .with_root_certificates(root_store)
+                    .with_no_client_auth()
             };
             config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
             Self {
