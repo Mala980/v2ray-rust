@@ -386,17 +386,35 @@ jobs:
       shell: bash
       run: |
         set -x
-        cargo fetch --verbose 2>&1 | tee /tmp/fetch.log
-        EXIT=${PIPESTATUS[0]}
+        cargo fetch --verbose 2>&1 | tee /tmp/fetch.log; EXIT=${PIPESTATUS[0]}
+        echo "cargo fetch exit $EXIT"
+        cat /tmp/fetch.log
         if [ $EXIT -ne 0 ]; then
-          echo "cargo fetch failed with $EXIT"
-          cat /tmp/fetch.log | tail -100 | while IFS= read -r line; do
-            esc=$(echo "$line" | sed 's/%/%25/g; s/\r/%0D/g' | cut -c1-2000)
-            [ -n "$esc" ] && echo "::error::FETCH:$esc"
+          echo "cargo fetch failed with $EXIT, showing as annotations"
+          cat /tmp/fetch.log | tail -200 | while IFS= read -r line; do
+            esc=$(printf "%s" "$line" | sed 's/%/%25/g; s/\r/%0D/g; s/\n/%0A/g' | cut -c1-2000)
+            [ -n "$esc" ] && echo "::error::FETCH:$esc" || true
           done
-          cat /tmp/fetch.log
+          # Also try to save to runner temp for artifact
+          if command -v cygpath >/dev/null 2>&1; then
+            cp /tmp/fetch.log $(cygpath -u "$RUNNER_TEMP")/build.log || true
+          else
+            cp /tmp/fetch.log ${RUNNER_TEMP}/build.log || true
+            cp /tmp/fetch.log ./fetch.log || true
+          fi
           exit $EXIT
         fi
+
+    - name: Upload fetch log on failure
+      if: failure()
+      uses: actions/upload-artifact@v6
+      with:
+        name: fetch-log-${{ matrix.config.artifact }}-${{ github.sha }}
+        path: |
+          /tmp/fetch.log
+          ./fetch.log
+          ${{ runner.temp }}/build.log
+        retention-days: 2
     
     - name: Cache target directory
       uses: actions/cache@v5
