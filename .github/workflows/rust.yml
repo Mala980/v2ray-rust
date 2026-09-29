@@ -383,7 +383,20 @@ jobs:
           registry-${{ runner.os }}-${{ matrix.config.target_triple }}-
 
     - name: Fetch dependencies
-      run: cargo fetch
+      shell: bash
+      run: |
+        set -x
+        cargo fetch --verbose 2>&1 | tee /tmp/fetch.log
+        EXIT=${PIPESTATUS[0]}
+        if [ $EXIT -ne 0 ]; then
+          echo "cargo fetch failed with $EXIT"
+          cat /tmp/fetch.log | tail -100 | while IFS= read -r line; do
+            esc=$(echo "$line" | sed 's/%/%25/g; s/\r/%0D/g' | cut -c1-2000)
+            [ -n "$esc" ] && echo "::error::FETCH:$esc"
+          done
+          cat /tmp/fetch.log
+          exit $EXIT
+        fi
     
     - name: Cache target directory
       uses: actions/cache@v5
