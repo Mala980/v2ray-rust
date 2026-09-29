@@ -75,8 +75,10 @@ jobs:
         if: failure()
         shell: bash
         run: |
-          cat /tmp/build.log | tail -200 | while IFS= read -r line; do esc=$(echo "$line" | sed 's/%/%25/g; s/\r/%0D/g' | cut -c1-2000); [ -n "$esc" ] && echo "::error::$esc" || true; done
-          cat /tmp/build.log | grep -i -E "error\[E|failed|Caused by" | tail -50 | while IFS= read -r line; do esc=$(echo "$line" | sed 's/%/%25/g; s/\r/%0D/g' | cut -c1-2000); [ -n "$esc" ] && echo "::error::$esc" || true; done
+          echo "=== GREP ERRORS ==="
+          cat /tmp/build.log | grep -i -E "error\[E|error:|failed|Caused by|undefined reference|linker" | head -100 | while IFS= read -r line; do esc=$(echo "$line" | sed 's/%/%25/g; s/\r/%0D/g' | cut -c1-2000); [ -n "$esc" ] && echo "::error::$esc" || true; done
+          echo "=== TAIL 50 ==="
+          cat /tmp/build.log | tail -100 | while IFS= read -r line; do esc=$(echo "$line" | sed 's/%/%25/g; s/\r/%0D/g' | cut -c1-2000); [ -n "$esc" ] && echo "::warning::$esc" || true; done
 
       - name: Upload build log artifact
         if: failure()
@@ -96,13 +98,20 @@ jobs:
           set -x
           mkdir -p logs
           cp /tmp/build.log logs/rustls-android-build.log 2>&1 || cp ./build.log logs/rustls-android-build.log 2>&1 || echo "no log" > logs/rustls-android-build.log
-          cat logs/rustls-android-build.log | tail -200
+          echo "Log size $(wc -c < logs/rustls-android-build.log)"
+          tail -200 logs/rustls-android-build.log || true
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add logs/
-          git commit -m "ci: add rustls android build log [skip ci]" || echo "no commit"
+          # Fetch latest and rebase to avoid conflicts, but keep our log file
           git fetch origin arena/01a0dc70-v2ray-rust || true
-          git pull --rebase origin arena/01a0dc70-v2ray-rust || true
+          # Stash our log file, rebase, then restore
+          cp logs/rustls-android-build.log /tmp/saved.log || true
+          git stash push -m "log" --keep-index || true
+          git pull --rebase origin arena/01a0dc70-v2ray-rust || git rebase --abort || true
+          git stash pop || true
+          cp /tmp/saved.log logs/rustls-android-build.log || true
+          git add logs/
+          git commit -m "ci: add rustls android build log [skip ci]" || echo "no commit needed"
           git push origin HEAD:arena/01a0dc70-v2ray-rust || git push --force origin HEAD:arena/01a0dc70-v2ray-rust || true
       - name: Upload binary
         uses: actions/upload-artifact@v6
