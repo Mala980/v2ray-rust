@@ -1,0 +1,33 @@
+# VMess + WS + TLS + Early Data (0-RTT) - Go parity
+# Early data mengurangi latency, cocok untuk WS
+
+[[vmess]]
+addr = "1.2.3.4:443"
+uuid = "b831381d-6324-4d53-ad4f-8cda48b30811"
+method = "aes-128-gcm"
+tag = "vmess"
+
+[[ws]]
+uri = "wss://example.com:443/ws?ed=2048"
+# ed=2048 mengaktifkan early data
+# Server harus support early data
+early_data_header_name = "Sec-WebSocket-Protocol"
+max_early_data = 2048
+headers = { Host = "example.com" }
+tag = "ws"
+
+[[tls]]
+sni = "example.com"
+tag = "tls"
+
+[[direct]]
+tag = "direct"
+
+[[outbounds]]
+chain = ["tls", "ws", "vmess"]
+tag = "proxy"
+
+[[inbounds]]
+addr = "127.0.0.1:1080"
+enable_udp = true
+tag = "socks"

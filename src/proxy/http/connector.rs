@@ -47,28 +47,71 @@ impl tower::Service<Uri> for Connector {
             .map(|s| s == &Scheme::HTTPS || s.as_str() == "wss")
             .unwrap_or(false);
 
-        let addr = uri.authority().map(|x| x.as_str()).unwrap_or("");
-        let addr = Address::from_str(
-            addr.get(addr.find('@').map_or(0, |x| x + 1)..)
-                .unwrap_or(""),
-        );
+        // For Go compatibility, parse authority handling IPv6 and userinfo
+        let authority_str = uri.authority().map(|a| a.as_str()).unwrap_or("").to_string();
         let inner_map = self.inner_map.clone();
         let router = self.router.clone();
+        let uri_clone = uri.clone();
         let f = async move {
+            // Extract host:port from authority, stripping userinfo if present
+            let addr_str = {
+                let auth = authority_str.as_str();
+                if auth.is_empty() {
+                    // For Go compatibility, if no authority, try to use Host header? But we don't have it here
+                    // Return error as Go would
+                    ""
+                } else {
+                    // Strip userinfo: take part after last '@'
+                    auth.rsplit('@').next().unwrap_or(auth)
+                }
+            };
+
+            if addr_str.is_empty() {
+                log::error!(
+                    "HTTP inbound target URI must have authority, but found: {}",
+                    uri_clone
+                );
+                return Err(Error::new(ErrorKind::Other, "URI must have authority"));
+            }
+
+            let addr = Address::from_str(addr_str);
+
             match addr {
-                Ok(addr) => {
+                Ok(mut addr) => {
+                    // For http proxy, if scheme is http and port is 0 (no port), default to 80
+                    // For https via CONNECT, port should be present, but we already handled CONNECT separately
                     if is_tls_scheme {
-                        let err =
-                            Error::new(ErrorKind::Other, "HTTP inbound target URI is tls and the client is not using CONNECT method.");
-                        log::error!("HTTP inbound target URI is tls and the client is not using CONNECT method. URI is: {}", uri);
+                        let err = Error::new(
+                            ErrorKind::Other,
+                            "HTTP inbound target URI is tls and the client is not using CONNECT method.",
+                        );
+                        log::error!(
+                            "HTTP inbound target URI is tls and the client is not using CONNECT method. URI is: {}",
+                            uri_clone
+                        );
                         return Err(err);
+                    }
+                    // If address is domain without explicit port and we got default 80 from parsing,
+                    // but uri has explicit port, use that port
+                    if let Some(port) = uri_clone.authority().and_then(|a| a.port_u16()) {
+                        // Override port if address is domain and port was default
+                        match &mut addr {
+                            Address::DomainNameAddress(_, p) => {
+                                *p = port;
+                            }
+                            Address::SocketAddress(sa) => {
+                                sa.set_port(port);
+                            }
+                        }
                     }
                     let ob = router.match_addr(&addr);
                     let stream_builder = inner_map.get(ob).unwrap();
                     log::info!("routing {} to outbound:{}", addr, ob);
                     if stream_builder.is_blackhole() {
-                        let err =
-                            Error::new(ErrorKind::Other, "HTTP inbound target URI is in blackhole");
+                        let err = Error::new(
+                            ErrorKind::Other,
+                            "HTTP inbound target URI is in blackhole",
+                        );
                         return Err(err);
                     }
                     let server = stream_builder.build_tcp(addr).await?;
@@ -76,8 +119,9 @@ impl tower::Service<Uri> for Connector {
                 }
                 Err(_) => {
                     log::error!(
-                        "HTTP inbound target URI must be a valid address, but found: {}",
-                        uri
+                        "HTTP inbound target URI must be a valid address, but found: {} (authority: {})",
+                        uri_clone,
+                        addr_str
                     );
                     let err = Error::new(ErrorKind::Other, "URI must be a valid Address");
                     Err(err)

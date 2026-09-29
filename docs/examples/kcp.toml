@@ -1,0 +1,38 @@
+# KCP / mKCP Transport - Go parity
+# KCP untuk packet loss tinggi
+
+[[vmess]]
+addr = "1.2.3.4:443"
+uuid = "b831381d-6324-4d53-ad4f-8cda48b30811"
+method = "aes-128-gcm"
+tag = "vmess"
+
+[[kcp]]
+mtu = 1350
+tti = 20
+uplink_capacity = 5
+downlink_capacity = 20
+congestion = false
+read_buffer_size = 2
+write_buffer_size = 2
+header_type = "none"
+# header_type: none, srtp, utp, wechat-video, dtls, wireguard
+# seed opsional untuk obfuscation
+# seed = "your-seed"
+tag = "kcp"
+
+[[direct]]
+tag = "direct"
+
+[[outbounds]]
+chain = ["kcp", "vmess"]
+tag = "proxy"
+
+[[outbounds]]
+chain = ["direct"]
+tag = "direct-out"
+
+[[inbounds]]
+addr = "127.0.0.1:1080"
+enable_udp = true
+tag = "socks"

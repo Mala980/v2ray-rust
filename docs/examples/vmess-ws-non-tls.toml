@@ -1,0 +1,27 @@
+# VMess + WebSocket tanpa TLS - Go parity
+
+[[vmess]]
+addr = "1.2.3.4:10002"
+uuid = "b831381d-6324-4d53-ad4f-8cda48b30811"
+method = "aes-128-gcm"
+tag = "vmess"
+
+[[ws]]
+uri = "ws://1.2.3.4:10002/ws?ed=2048"
+tag = "ws"
+
+[[direct]]
+tag = "direct"
+
+[[outbounds]]
+chain = ["ws", "vmess"]
+tag = "proxy"
+
+[[outbounds]]
+chain = ["direct"]
+tag = "direct-out"
+
+[[inbounds]]
+addr = "127.0.0.1:1080"
+enable_udp = true
+tag = "socks"

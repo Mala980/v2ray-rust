@@ -29,6 +29,11 @@ uuid = "b831381d-6324-4d53-ad4f-8cda48b30811"
 method = "aes-128-gcm"
 tag = "v"
 
+[[vless]]
+addr = "127.0.0.1:10002"
+uuid = "b831381d-6324-4d53-ad4f-8cda48b30811"
+tag = "vless"
+
 [[trojan]]
 addr = "127.0.0.1:10003"
 password = "password"

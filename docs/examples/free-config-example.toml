@@ -1,0 +1,87 @@
+# Free Config Example - Template untuk config gratis dari internet
+# Ganti 1.2.3.4, uuid, password dengan config gratis yang kamu dapat
+# Sumber gratis: https://www.v2rayse.com/, Telegram @freev2ray, dll
+
+# Contoh 1: VMess WS TLS gratis (paling umum)
+[[vmess]]
+addr = "104.16.0.0:443"
+# Ganti dengan IP/domain server gratis
+uuid = "b831381d-6324-4d53-ad4f-8cda48b30811"
+# Ganti dengan UUID dari config gratis
+method = "aes-128-gcm"
+tag = "vmess-free"
+
+[[ws]]
+uri = "wss://example.com:443/path?ed=2048"
+# Ganti example.com dengan SNI/host dari config gratis
+# path biasanya / atau /vmess atau /ray
+tag = "ws-free"
+
+[[tls]]
+sni = "example.com"
+# SNI harus sama dengan host di WS URI
+tag = "tls-free"
+
+# Contoh 2: VLESS WS TLS gratis (alternatif, uncomment jika pakai VLESS)
+# [[vless]]
+# addr = "104.16.0.0:443"
+# uuid = "b831381d-6324-4d53-ad4f-8cda48b30811"
+# tag = "vless-free"
+
+# Contoh 3: Trojan WS TLS gratis (alternatif)
+# [[trojan]]
+# addr = "104.16.0.0:443"
+# password = "your-trojan-password-dari-config-gratis"
+# tag = "trojan-free"
+
+[[direct]]
+tag = "direct"
+
+[[blackhole]]
+tag = "block"
+
+# Chain untuk free config
+[[outbounds]]
+chain = ["tls-free", "ws-free", "vmess-free"]
+# Jika pakai VLESS: chain = ["tls-free", "ws-free", "vless-free"]
+# Jika pakai Trojan: chain = ["tls-free", "ws-free", "trojan-free"]
+tag = "proxy"
+
+[[outbounds]]
+chain = ["direct"]
+tag = "direct-out"
+
+[[outbounds]]
+chain = ["block"]
+tag = "block-out"
+
+[[inbounds]]
+addr = "127.0.0.1:1080"
+enable_udp = true
+tag = "socks"
+
+[[inbounds]]
+addr = "127.0.0.1:1081"
+tag = "http"
+
+# Routing: bypass private & China, block ads
+[[geoip_rules]]
+tag = "direct-out"
+rules = ["private"]
+
+[[geosite_rules]]
+tag = "direct-out"
+rules = ["cn"]
+
+[[geosite_rules]]
+tag = "block-out"
+rules = ["category-ads-all"]
+
+default_outbound = "proxy"
+
+# Cara test:
+# 1. ./v2ray-rust -c docs/examples/free-config-example.toml
+# 2. Di terminal lain: curl -x socks5h://127.0.0.1:1080 https://www.google.com -I
+#    Jika 200 OK, koneksi berhasil
+# 3. Atau test IP: curl -x socks5h://127.0.0.1:1080 https://ifconfig.me
+# 4. Untuk Android: adb push v2ray-rust + config, jalankan, set proxy di HP ke 127.0.0.1:1080 via SocksDroid

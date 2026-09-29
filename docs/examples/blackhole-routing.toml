@@ -1,0 +1,56 @@
+# Direct + Blackhole + GeoIP/GeoSite Routing - Go parity
+# Routing mirip v2ray-core Go
+
+[[direct]]
+tag = "direct"
+
+[[blackhole]]
+tag = "block"
+
+[[outbounds]]
+chain = ["direct"]
+tag = "proxy"
+
+[[outbounds]]
+chain = ["direct"]
+tag = "direct-out"
+
+[[outbounds]]
+chain = ["block"]
+tag = "block-out"
+
+[[inbounds]]
+addr = "127.0.0.1:1080"
+enable_udp = true
+tag = "socks"
+
+[[inbounds]]
+addr = "127.0.0.1:1081"
+tag = "http"
+
+# Domain routing: cn -> direct, ads -> block
+[[geosite_rules]]
+tag = "direct-out"
+rules = ["cn"]
+# file_path opsional, default cari di env V2RAY_LOCATION_ASSET atau exe dir
+
+[[geosite_rules]]
+tag = "block-out"
+rules = ["category-ads-all"]
+
+# IP routing: private -> direct, cn -> direct
+[[geoip_rules]]
+tag = "direct-out"
+rules = ["private", "cn"]
+
+[[ip_routing_rules]]
+tag = "block-out"
+cidr_rules = ["192.168.0.1/32"]
+
+[[domain_routing_rules]]
+tag = "block-out"
+domain_rules = ["baidu.com"]
+full_rules = ["evil.com"]
+
+# Default outbound jika tidak match routing
+default_outbound = "proxy"
