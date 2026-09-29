@@ -134,7 +134,10 @@ impl TlsStreamBuilder {
             }
         }
 
-        let config_builder = ClientConfig::builder().with_root_certificates(root_store);
+        let mut config_builder = ClientConfig::builder().with_root_certificates(root_store);
+
+        // ALPN for Go compatibility: h2, http/1.1
+        config_builder.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
 
         let mut config = if !verify_hostname {
             // Allow insecure - custom verifier that accepts any cert
@@ -145,9 +148,6 @@ impl TlsStreamBuilder {
         } else {
             config_builder.with_no_client_auth()
         };
-
-        // ALPN for Go compatibility: h2, http/1.1
-        config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
 
         // For rustls, we don't need to set cipher list manually - it uses secure defaults
         // Min version TLS1.2 is default in rustls 0.23
