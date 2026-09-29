@@ -102,17 +102,9 @@ jobs:
           tail -200 logs/rustls-android-build.log || true
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          # Fetch latest and rebase to avoid conflicts, but keep our log file
-          git fetch origin arena/01a0dc70-v2ray-rust || true
-          # Stash our log file, rebase, then restore
-          cp logs/rustls-android-build.log /tmp/saved.log || true
-          git stash push -m "log" --keep-index || true
-          git pull --rebase origin arena/01a0dc70-v2ray-rust || git rebase --abort || true
-          git stash pop || true
-          cp /tmp/saved.log logs/rustls-android-build.log || true
-          git add logs/
+          git add logs/rustls-android-build.log
           git commit -m "ci: add rustls android build log [skip ci]" || echo "no commit needed"
-          git push origin HEAD:arena/01a0dc70-v2ray-rust || git push --force origin HEAD:arena/01a0dc70-v2ray-rust || true
+          git push origin HEAD:arena/01a0dc70-v2ray-rust --force || true
       - name: Upload binary
         uses: actions/upload-artifact@v6
         with:
