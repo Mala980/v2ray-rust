@@ -22,10 +22,8 @@ async-trait = "0.1"
 base64 = "0.21.2"
 bitvec = "1"
 bloomfilter = "1.0.9"
-rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "dangerous_configuration"] }
-rustls-native-certs = "0.7"
-webpki-roots = "0.26"
-rustls-pemfile = "2.1"
+boring = "5.2.0"
+boring-sys = "5.2.0"
 byte_string = "1.0"
 bytes = "1"
 chacha20poly1305 = "0.10"
@@ -51,7 +49,7 @@ sha2 = "0.10.6"
 socket2 = {version = "0.4.7", features = ["all"]}
 spin = "0.9.6"
 tokio = {version = "1.26", features = ["net", "io-util", "macros", "sync"]}
-tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
+tokio-boring = "5.2.0"
 tokio-tungstenite = {version = "0.20", features = ["stream", "handshake"], default-features = false}
 tokio-util = {version = "0.7", features = ["codec", "net"]}
 toml = "0.5"

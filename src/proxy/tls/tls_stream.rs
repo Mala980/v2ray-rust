@@ -5,13 +5,13 @@ use crate::proxy::{
     UdpRead, UdpWrite,
 };
 use async_trait::async_trait;
-use std::io;
-use std::sync::Arc;
 
-use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
-use rustls::pki_types::{CertificateDer, ServerName};
-use rustls::{ClientConfig, DigitallySignedStruct, SignatureScheme};
-use tokio_rustls::{client::TlsStream, TlsConnector};
+use boring::ssl::{SslConnector, SslSignatureAlgorithm, SslVerifyMode};
+use boring::ssl::{SslMethod, SslVersion};
+use foreign_types_shared::ForeignTypeRef;
+use std::io;
+
+use tokio_boring::{connect, SslStream};
 
 #[cfg(target_os = "macos")]
 use super::macos as platform;
@@ -22,58 +22,10 @@ use super::windows as platform;
 
 #[derive(Clone)]
 pub struct TlsStreamBuilder {
-    config: Arc<ClientConfig>,
+    connector: SslConnector,
     sni: String,
+    verify_hostname: bool,
     verify_sni: bool,
-}
-
-#[derive(Debug)]
-struct NoCertificateVerification;
-
-impl ServerCertVerifier for NoCertificateVerification {
-    fn verify_server_cert(
-        &self,
-        _end_entity: &CertificateDer<'_>,
-        _intermediates: &[CertificateDer<'_>],
-        _server_name: &ServerName<'_>,
-        _ocsp_response: &[u8],
-        _now: rustls::pki_types::UnixTime,
-    ) -> Result<ServerCertVerified, rustls::Error> {
-        Ok(ServerCertVerified::assertion())
-    }
-
-    fn verify_tls12_signature(
-        &self,
-        _message: &[u8],
-        _cert: &CertificateDer<'_>,
-        _dss: &DigitallySignedStruct,
-    ) -> Result<HandshakeSignatureValid, rustls::Error> {
-        Ok(HandshakeSignatureValid::assertion())
-    }
-
-    fn verify_tls13_signature(
-        &self,
-        _message: &[u8],
-        _cert: &CertificateDer<'_>,
-        _dss: &DigitallySignedStruct,
-    ) -> Result<HandshakeSignatureValid, rustls::Error> {
-        Ok(HandshakeSignatureValid::assertion())
-    }
-
-    fn supported_verify_schemes(&self) -> Vec<SignatureScheme> {
-        vec![
-            SignatureScheme::RSA_PKCS1_SHA256,
-            SignatureScheme::RSA_PKCS1_SHA384,
-            SignatureScheme::RSA_PKCS1_SHA512,
-            SignatureScheme::ECDSA_NISTP256_SHA256,
-            SignatureScheme::ECDSA_NISTP384_SHA384,
-            SignatureScheme::ECDSA_NISTP521_SHA512,
-            SignatureScheme::RSA_PSS_SHA256,
-            SignatureScheme::RSA_PSS_SHA384,
-            SignatureScheme::RSA_PSS_SHA512,
-            SignatureScheme::ED25519,
-        ]
-    }
 }
 
 impl TlsStreamBuilder {
@@ -83,109 +35,116 @@ impl TlsStreamBuilder {
         verify_hostname: bool,
         verify_sni: bool,
     ) -> Self {
-        let mut root_store = rustls::RootCertStore::empty();
-
-        // Load webpki roots
-        root_store.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
-
-        // Load native certs via platform
-        log::debug!("start add system cert");
-        match platform::load_native_certs() {
-            Ok(certs) => {
-                log::debug!("certs len:{}", certs.len());
-                let mut count = 0;
-                for cert in certs.into_iter() {
-                    if root_store.add(cert).is_ok() {
-                        count += 1;
+        let mut configuration = SslConnector::builder(SslMethod::tls()).unwrap();
+        {
+            log::debug!("start add system cert");
+            match platform::load_native_certs() {
+                Ok(certs) => {
+                    log::debug!("certs len:{}", certs.len());
+                    let mut count = 0;
+                    for cert in certs.into_iter() {
+                        if configuration.cert_store_mut().add_cert(cert).is_ok() {
+                            count += 1;
+                        }
                     }
-                }
-                log::debug!("add system cert done, count:{}", count);
-            }
-            Err(e) => {
-                log::warn!("load system certs failed: {}, continuing", e);
-            }
-        }
-
-        // Load custom CA file if provided
-        if let Some(cert_file) = cert_file {
-            debug_log!("load custom ca file: {}", cert_file);
-            match std::fs::read(cert_file) {
-                Ok(pem_data) => {
-                    let mut reader = std::io::BufReader::new(&pem_data[..]);
-                    for cert in rustls_pemfile::certs(&mut reader).flatten() {
-                        let _ = root_store.add(cert);
-                    }
+                    log::debug!("add system cert done, count:{}", count);
                 }
                 Err(e) => {
-                    log::warn!("read ca file {} failed: {}", cert_file, e);
+                    log::warn!("load system certs failed: {}, continuing", e);
                 }
             }
         }
-
-        // Also try rustls-native-certs for more system certs
-        match rustls_native_certs::load_native_certs() {
-            Ok(certs) => {
-                for cert in certs {
-                    let _ = root_store.add(cert);
-                }
-            }
-            Err(err) => {
-                log::debug!("rustls-native-certs failed: {}, continuing", err);
+        if let Some(cert_file) = cert_file {
+            debug_log!("load custom ca file: {}", cert_file);
+            if let Err(e) = configuration.set_ca_file(cert_file) {
+                log::warn!("set ca file {} failed: {}", cert_file, e);
             }
         }
+        // For Go compatibility, set ALPN to match Go's default [h2, http/1.1]
+        // Go's TLS config alpn default is [\"h2\", \"http/1.1\"]
+        if let Err(e) = configuration.set_alpn_protos(b"\x02h2\x08http/1.1") {
+            log::warn!("set alpn failed: {}", e);
+        }
+        // Cipher list to mimic modern browser and match Go's uTLS fingerprint resistance
+        let _ = configuration.set_cipher_list("ALL:!aPSK:!ECDSA+SHA1:!3DES");
+        let _ = configuration.set_verify_algorithm_prefs(&[
+            SslSignatureAlgorithm::ECDSA_SECP256R1_SHA256,
+            SslSignatureAlgorithm::RSA_PSS_RSAE_SHA256,
+            SslSignatureAlgorithm::RSA_PKCS1_SHA256,
+            SslSignatureAlgorithm::ECDSA_SECP384R1_SHA384,
+            SslSignatureAlgorithm::RSA_PSS_RSAE_SHA384,
+            SslSignatureAlgorithm::RSA_PKCS1_SHA384,
+            SslSignatureAlgorithm::RSA_PSS_RSAE_SHA512,
+            SslSignatureAlgorithm::RSA_PKCS1_SHA512,
+        ]);
+        let _ = configuration.set_min_proto_version(Some(SslVersion::TLS1_2));
+        configuration.enable_signed_cert_timestamps();
+        configuration.enable_ocsp_stapling();
+        configuration.set_grease_enabled(true);
 
-        let config_builder = ClientConfig::builder().with_root_certificates(root_store);
+        // For Go compatibility: if verify_hostname is false, disable cert verification
+        // This matches Go's allowInsecure behavior
+        if !verify_hostname {
+            configuration.set_verify(SslVerifyMode::NONE);
+        }
 
-        let mut config = if !verify_hostname {
-            // Allow insecure - custom verifier that accepts any cert
-            config_builder
-                .dangerous()
-                .with_custom_certificate_verifier(Arc::new(NoCertificateVerification))
-                .with_no_client_auth()
-        } else {
-            config_builder.with_no_client_auth()
-        };
-
-        // ALPN for Go compatibility: h2, http/1.1
-        config.alpn_protocols = vec![b"h2".to_vec(), b"http/1.1".to_vec()];
-
-        // For rustls, we don't need to set cipher list manually - it uses secure defaults
-        // Min version TLS1.2 is default in rustls 0.23
-
+        unsafe {
+            boring_sys::SSL_CTX_add_cert_compression_alg(
+                configuration.as_ptr(),
+                boring_sys::TLSEXT_cert_compression_brotli as u16,
+                None,
+                Some(decompress_ssl_cert),
+            );
+        }
         Self {
-            config: Arc::new(config),
+            connector: configuration.build(),
             sni,
+            verify_hostname,
             verify_sni,
         }
     }
 }
 
-impl<S: ProxyUdpStream> UdpRead for TlsStream<S> {}
-impl<S: ProxyUdpStream> UdpWrite for TlsStream<S> {}
+impl<S: ProxyUdpStream> UdpRead for SslStream<S> {}
 
-#[async_trait]
-impl ChainableStreamBuilder for TlsStreamBuilder {
-    async fn build_tcp(&self, io: BoxProxyStream) -> io::Result<BoxProxyStream> {
-        let sni_str = if self.verify_sni {
-            self.sni.clone()
-        } else {
-            // If verify_sni is false, we still need SNI for connection but don't verify?
-            // For rustls, we need to provide server name for SNI, but we can use sni even if verify_sni false
-            self.sni.clone()
-        };
+impl<S: ProxyUdpStream> UdpWrite for SslStream<S> {}
 
-        let server_name = ServerName::try_from(sni_str.clone())
-            .unwrap_or_else(|_| ServerName::try_from("example.com").unwrap());
-
-        let connector = TlsConnector::from(self.config.clone());
-        match connector.connect(server_name, io).await {
+macro_rules! build_tcp_impl {
+    ($name:tt,$io:tt) => {
+        let mut configuration = $name.connector.configure().unwrap();
+        configuration.set_use_server_name_indication($name.verify_sni);
+        configuration.set_verify_hostname($name.verify_hostname);
+        // For Go compatibility, if verify_hostname is false, we already set verify NONE on ctx,
+        // but also need to set on the connection config
+        if !$name.verify_hostname {
+            configuration.set_verify(SslVerifyMode::NONE);
+        }
+        // Enable ECH grease and application settings for h2 as Go does for fingerprint resistance
+        unsafe {
+            boring_sys::SSL_add_application_settings(
+                configuration.as_ptr(),
+                b"h2".as_ptr(),
+                2,
+                b"\x00\x03".as_ptr(),
+                2,
+            );
+        }
+        let stream = connect(configuration, $name.sni.as_str(), $io).await;
+        return match stream {
             Ok(stream) => Ok(Box::new(stream)),
             Err(e) => {
                 let res = e.to_string();
                 debug_log!("tls connect failed: {}", res);
                 Err(new_error(res))
             }
-        }
+        };
+    };
+}
+
+#[async_trait]
+impl ChainableStreamBuilder for TlsStreamBuilder {
+    async fn build_tcp(&self, io: BoxProxyStream) -> io::Result<BoxProxyStream> {
+        build_tcp_impl!(self, io);
     }
 
     async fn build_udp(
@@ -194,23 +153,9 @@ impl ChainableStreamBuilder for TlsStreamBuilder {
         build_tcp_inside: bool,
     ) -> io::Result<BoxProxyUdpStream> {
         if build_tcp_inside {
-            // For UDP, we need to build TCP inside if requested - but TLS over UDP is not standard
-            // We'll just return io as before for UDP
-            let sni_str = self.sni.clone();
-            let server_name = ServerName::try_from(sni_str)
-                .unwrap_or_else(|_| ServerName::try_from("example.com").unwrap());
-            let connector = TlsConnector::from(self.config.clone());
-            match connector.connect(server_name, io).await {
-                Ok(stream) => Ok(Box::new(stream)),
-                Err(e) => {
-                    let res = e.to_string();
-                    debug_log!("tls connect failed: {}", res);
-                    Err(new_error(res))
-                }
-            }
-        } else {
-            Ok(io)
+            build_tcp_impl!(self, io);
         }
+        Ok(io)
     }
 
     fn into_box(self) -> Box<dyn ChainableStreamBuilder> {
@@ -223,6 +168,38 @@ impl ChainableStreamBuilder for TlsStreamBuilder {
 
     fn protocol_type(&self) -> ProtocolType {
         ProtocolType::Tls
+    }
+}
+
+extern "C" fn decompress_ssl_cert(
+    _ssl: *mut boring_sys::SSL,
+    out: *mut *mut boring_sys::CRYPTO_BUFFER,
+    mut uncompressed_len: usize,
+    in_: *const u8,
+    in_len: usize,
+) -> libc::c_int {
+    unsafe {
+        let mut buf: *mut u8 = std::ptr::null_mut();
+        let x: *mut *mut u8 = &mut buf;
+        let allocated_buffer = boring_sys::CRYPTO_BUFFER_alloc(x, uncompressed_len);
+        if buf.is_null() {
+            return 0;
+        }
+        let uncompressed_len_ptr: *mut usize = &mut uncompressed_len;
+        if brotli::ffi::decompressor::CBrotliDecoderDecompress(
+            in_len,
+            in_,
+            uncompressed_len_ptr,
+            buf,
+        ) as i32
+            == 1
+        {
+            *out = allocated_buffer;
+            1
+        } else {
+            boring_sys::CRYPTO_BUFFER_free(allocated_buffer);
+            0
+        }
     }
 }
 
