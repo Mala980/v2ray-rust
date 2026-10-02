@@ -1,4 +1,4 @@
-#[cfg(all(feature = "boring-tls", not(feature = "rustls-tls")))]
+#[cfg(feature = "boring-tls")]
 mod boring_platform {
     use crate::common::new_error;
     use boring::x509::X509;
@@ -67,12 +67,11 @@ pub use rustls_platform::load_native_certs;
 
 #[cfg(not(any(feature = "boring-tls", feature = "rustls-tls")))]
 mod fallback_platform {
-    use crate::common::new_error;
-    use boring::x509::X509;
+    use rustls::pki_types::CertificateDer;
     use security_framework::trust_settings::{Domain, TrustSettings, TrustSettingsForCertificate};
     use std::collections::HashMap;
     use std::io::{self, Error, ErrorKind};
-    pub fn load_native_certs() -> io::Result<Vec<X509>> {
+    pub fn load_native_certs() -> io::Result<Vec<CertificateDer<'static>>> {
         let mut all_certs = HashMap::new();
         for domain in &[Domain::User, Domain::Admin, Domain::System] {
             let ts = TrustSettings::new(*domain);
@@ -90,7 +89,7 @@ mod fallback_platform {
         for (der, trusted) in all_certs.drain() {
             use TrustSettingsForCertificate::*;
             if let TrustRoot | TrustAsRoot = trusted {
-                certs.push(X509::from_der(&der).map_err(new_error)?);
+                certs.push(CertificateDer::from(der));
             }
         }
         Ok(certs)

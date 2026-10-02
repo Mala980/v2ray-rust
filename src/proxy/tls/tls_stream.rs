@@ -6,7 +6,7 @@ use crate::proxy::{
 };
 use async_trait::async_trait;
 
-#[cfg(all(feature = "boring-tls", not(feature = "rustls-tls")))]
+#[cfg(feature = "boring-tls")]
 mod boring_impl {
     use super::*;
     use boring::ssl::{SslConnector, SslSignatureAlgorithm, SslVerifyMode};
@@ -369,16 +369,16 @@ mod rustls_impl {
     }
 }
 
-// Default: boring-tls if no rustls-tls feature, or if both features enabled, prefer rustls for Android static
+// Default is rustls-tls for truly static Android without libc++_shared.so
+#[cfg(all(feature = "rustls-tls"))]
+pub use rustls_impl::TlsStreamBuilder;
+
 #[cfg(all(feature = "boring-tls", not(feature = "rustls-tls")))]
 pub use boring_impl::TlsStreamBuilder;
 
-#[cfg(feature = "rustls-tls")]
-pub use rustls_impl::TlsStreamBuilder;
-
-// Fallback if no feature enabled (should not happen, default is boring-tls)
+// Fallback if no feature enabled (should not happen, default is rustls-tls)
 #[cfg(not(any(feature = "boring-tls", feature = "rustls-tls")))]
-pub use boring_impl::TlsStreamBuilder;
+pub use rustls_impl::TlsStreamBuilder;
 
 #[cfg(all(target_os = "linux", test))]
 mod tests {
