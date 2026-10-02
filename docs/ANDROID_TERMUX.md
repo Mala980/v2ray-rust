@@ -92,3 +92,4 @@ curl -x socks5h://127.0.0.1:1080 https://ifconfig.me
 # TLS (port 443, SNI ruangguru.com)
 ./v2ray-rust -c docs/examples/free-asia1-tls.toml
 ```
+# Truly static Android with rustls
