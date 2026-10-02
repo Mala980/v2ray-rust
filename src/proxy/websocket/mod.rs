@@ -186,10 +186,18 @@ impl BinaryWsStreamBuilder {
     fn req(&self) -> Request<()> {
         let authority = self.uri.authority().map(|a| a.as_str()).unwrap_or("");
         // Handle userinfo in authority (e.g. user:pass@host) - strip it for Host header
-        let host = authority
+        let mut host = authority
             .find('@')
             .map(|idx| authority.split_at(idx + 1).1)
-            .unwrap_or(authority);
+            .unwrap_or(authority)
+            .to_string();
+        // For Go compatibility, strip default ports from Host header (Go does this)
+        // ws:// with :80 and wss:// with :443 should not include port in Host
+        if self.uri.scheme_str() == Some("ws") && host.ends_with(":80") {
+            host = host.trim_end_matches(":80").to_string();
+        } else if self.uri.scheme_str() == Some("wss") && host.ends_with(":443") {
+            host = host.trim_end_matches(":443").to_string();
+        }
         // For Go compatibility, Host header defaults to authority's host part
         let mut request = Request::builder()
             .method("GET")
